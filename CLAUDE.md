@@ -1367,9 +1367,9 @@ patrimônio USD⇄BRL.
 
 ## 15.1 COMO FALAR COM O DONO (regra de resposta — vale para TODA resposta)
 
-O dono é hobbyista, não engenheiro. Resposta longa e cheia de jargão **não é
-resposta**: ele não consegue usar, e o trabalho se perde. Escreva como se
-explicasse para um amigo inteligente que não conhece o código.
+Resposta longa e cheia de jargão **não é resposta**: ela não é acionável, e o
+trabalho se perde. Escreva de forma direta, sem depender de vocabulário interno
+do código para a ideia principal chegar.
 
 **Regras:**
 

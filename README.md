@@ -1,5 +1,9 @@
 # IA Investidora — robô de trading multi-corretora com decisão por IA e Motor de Regras determinístico
 
+[![Testes](https://github.com/RodrigoEscobar541/trading-bot-ia-multicorretora/actions/workflows/test.yml/badge.svg)](https://github.com/RodrigoEscobar541/trading-bot-ia-multicorretora/actions/workflows/test.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-informational)](https://nodejs.org)
+[![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-informational)](LICENSE)
+
 Plataforma autônoma de análise e execução de operações que roda 24/7 em quatro
 corretoras ao mesmo tempo — **Mercado Bitcoin** e **Binance** (cripto em BRL),
 **Tastytrade** (ações dos EUA em USD) e **Toro** (ações/FIIs da B3, em modo
