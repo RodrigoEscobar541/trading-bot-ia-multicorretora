@@ -1,0 +1,34 @@
+# Testes automáticos: roda `npm test` em todo push e pull request.
+# Impõe a regra do CLAUDE.md §16 ("npm test sempre verde antes de commit").
+# Não precisa de segredos: os testes rodam com persistência em MEMÓRIA
+# (BOT_PERSISTENCIA=memoria) — nunca tocam o Firestore nem chamam APIs.
+
+name: Testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Sem dependências de runtime obrigatórias para os testes, mas roda o
+      # ci para instalar firebase-admin/undici quando o lockfile os exigir.
+      - run: npm ci
+
+      - name: npm test
+        env:
+          BOT_PERSISTENCIA: memoria
+        run: npm test

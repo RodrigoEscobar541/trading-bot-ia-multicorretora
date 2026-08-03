@@ -1,0 +1,3 @@
+# Garante finais de linha LF em scripts shell — CRLF (vindo do Windows) quebra
+# a execução no Linux da VPS ("bad interpreter: /usr/bin/env bash^M").
+*.sh text eol=lf

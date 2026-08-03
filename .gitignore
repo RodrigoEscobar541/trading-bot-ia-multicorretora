@@ -1,0 +1,36 @@
+# Dependências
+node_modules/
+
+# Segredos — nunca versionar (regras.md §10)
+.env
+*serviceAccount*.json
+*service-account*.json
+*adminsdk*.json
+
+# Logs e artefatos locais
+*.log
+.firebase/
+firebase-debug.log
+
+# Atalhos pessoais do Windows (SSH da VPS etc.) — nunca versionar
+*.bat
+
+# Log do emulador do Firestore (npm run test:rules)
+firestore-debug.log
+firebase-debug.log
+
+# Marca do último deploy bem-sucedido na VPS (scripts/vps-deploy.sh)
+.deploy-ok
+
+# Backups de estado do Firestore tirados antes de limpezas manuais.
+# Não são segredo, mas são retratos de produção — ficam só na máquina.
+# O .md cobre o backup do texto de prompt que o publicar-regras.mjs guarda antes
+# de sobrescrever o doc que está no ar.
+backup_*.json
+backup_*.md
+
+# Scripts de dados FICTÍCIOS para apresentação (maquiagem de tela) e o reparo do
+# resíduo que eles deixam. Nunca devem entrar no repositório: o que o primeiro
+# escreve não é resultado real, e o segundo reescreve agregados em produção.
+vitrine-demo.mjs
+reparar-vitrine.mjs

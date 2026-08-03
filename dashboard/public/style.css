@@ -1,0 +1,471 @@
+/* style.css — chrome do painel. Tokens da paleta de referência validada
+   (dataviz): superfícies, tinta e séries definidos por papel; o tema escuro
+   troca os valores num único lugar via prefers-color-scheme. */
+
+:root {
+  --plano: #f9f9f7;            /* fundo da página */
+  --superficie: #fcfcfb;       /* cartões / superfície dos gráficos */
+  --tinta: #0b0b0b;            /* texto primário */
+  --tinta-2: #52514e;          /* texto secundário */
+  --tinta-mutada: #898781;     /* eixos / rótulos discretos */
+  --grade: #e1e0d9;            /* hairline de grade */
+  --eixo: #c3c2b7;
+  --borda: rgba(11, 11, 11, 0.10);
+  --serie-patrimonio: #2a78d6; /* slot 1 (azul) — validado */
+  --serie-lucro: #008300;      /* slot 2 (verde) — validado */
+  --serie-preco: #898781;      /* linha neutra do preço — a cor fica nos marcadores */
+  --marca-compra: #eda100;     /* slot 4 (amarelo) — validado; sempre com a forma ▲ */
+  --marca-venda: #2a78d6;      /* slot 1 (azul) — validado; sempre com a forma ▼ */
+  --marca-venda-stop: #c0392b; /* venda forçada pelo stop-loss do Motor; forma ▼ */
+  --marca-venda-liquidacao: #8a5a00; /* venda no modo vendas (V8); forma ▼ */
+  --positivo: #006300;         /* delta bom (texto) */
+  --negativo: #d03b3b;         /* status critical */
+  --atencao: #ec835a;          /* status serious (modo real) */
+  --acento: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --plano: #0d0d0d;
+    --superficie: #1a1a19;
+    --tinta: #ffffff;
+    --tinta-2: #c3c2b7;
+    --tinta-mutada: #898781;
+    --grade: #2c2c2a;
+    --eixo: #383835;
+    --borda: rgba(255, 255, 255, 0.10);
+    --serie-patrimonio: #3987e5;
+    --serie-lucro: #008300;
+    --serie-preco: #898781;
+    --marca-compra: #c98500;
+    --marca-venda: #3987e5;
+    --marca-venda-stop: #e05a4a;
+    --marca-venda-liquidacao: #d99a2b;
+    --positivo: #0ca30c;
+    --negativo: #d03b3b;
+    --atencao: #ec835a;
+    --acento: #3987e5;
+  }
+}
+
+* { box-sizing: border-box; }
+/* display:grid/flex em elementos com [hidden] venceria a regra fraca do
+   user-agent — esta regra garante que hidden sempre esconde. */
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--plano);
+  color: var(--tinta);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+
+/* ------------------------------------------------- leiaute com menu lateral */
+.leiaute { display: flex; min-height: 100dvh; }
+.conteudo { flex: 1; min-width: 0; max-width: 1080px; margin: 0 auto; padding: 20px 16px 48px; }
+
+.menu-lateral {
+  width: 230px; flex-shrink: 0;
+  background: var(--superficie); border-right: 1px solid var(--borda);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 16px 10px;
+  position: sticky; top: 0; height: 100dvh; overflow-y: auto;
+}
+.menu-topo { display: flex; justify-content: space-between; align-items: center; padding: 0 8px 8px; }
+.menu-marca { font-weight: 700; font-size: 15px; }
+.menu-nav { display: grid; gap: 2px; }
+.menu-grupo {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--tinta-mutada); padding: 14px 8px 4px;
+}
+.menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  color: var(--tinta-2); text-decoration: none; font-size: 14px;
+}
+.menu-item:hover { background: var(--plano); color: var(--tinta); }
+.menu-item.ativo { background: var(--plano); color: var(--tinta); font-weight: 600; }
+.menu-ponto { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex: none; }
+.menu-ponto.ligado { background: var(--positivo); }
+.menu-ponto.desligado { background: var(--eixo); }
+.menu-rodape {
+  margin-top: auto; display: grid; gap: 8px; padding: 12px 8px 0;
+  border-top: 1px solid var(--grade);
+}
+
+.so-mobile { display: none; }
+.fundo-menu { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 19; }
+
+@media (max-width: 860px) {
+  .so-mobile { display: inline-block; }
+  .menu-lateral {
+    position: fixed; z-index: 20; left: 0; top: 0;
+    transform: translateX(-105%); transition: transform 0.2s ease;
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.25);
+  }
+  .menu-lateral.aberto { transform: translateX(0); }
+}
+
+.texto-secundario { color: var(--tinta-2); font-size: 13px; }
+.texto-erro { color: var(--negativo); font-size: 13px; }
+
+/* ------------------------------------------------------------------ login */
+.tela-login {
+  min-height: 100dvh; display: grid; place-items: center; padding: 16px;
+  background: var(--plano);
+}
+.login-cartao { width: min(360px, 100%); display: grid; gap: 12px; }
+.login-cartao h1 { font-size: 22px; }
+
+/* ------------------------------------------------------------------ cartões */
+.cartao {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.topo {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; flex-wrap: wrap; margin: 4px 0 20px;
+}
+.topo-titulo { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.topo-acoes { display: flex; align-items: center; gap: 10px; }
+
+/* badge do modo: cor NUNCA sozinha — o texto diz o modo */
+.badge {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.4px;
+  padding: 3px 10px; border-radius: 999px; border: 1px solid var(--borda);
+  color: var(--tinta-2);
+}
+.badge.simulacao { color: var(--acento); border-color: var(--acento); }
+.badge.real { color: var(--atencao); border-color: var(--atencao); }
+.badge.assistido { color: var(--serie-patrimonio, var(--acento)); border-color: currentColor; }
+
+/* ------------------------------------------------------------------- tiles */
+.tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  margin-bottom: 16px;
+}
+.tile { display: grid; gap: 4px; align-content: start; margin-bottom: 0; }
+.tile-heroi { grid-column: 1 / -1; }
+.tile-rotulo { font-size: 12.5px; color: var(--tinta-2); }
+.tile-valor { font-size: 22px; font-weight: 600; }
+.tile-valor-heroi { font-size: 48px; line-height: 1.1; }
+.tile-delta { font-size: 13px; color: var(--tinta-2); }
+.tile-delta.sobe { color: var(--positivo); }
+.tile-delta.desce { color: var(--negativo); }
+
+/* Tile com sinal ("se vender tudo agora"): a borda esquerda pinta o resultado
+   inteiro, então o olho pega o sinal antes de ler o número. */
+.tile-sinal { border-left: 4px solid var(--eixo); }
+.tile-sinal.positivo { border-left-color: var(--positivo); }
+.tile-sinal.negativo { border-left-color: var(--negativo); }
+.tile-sinal .tile-valor { font-size: 28px; }
+
+/* --------------------------------------------------------------- decisão */
+.grade-2 { display: grid; gap: 16px; grid-template-columns: 1fr; }
+@media (min-width: 800px) { .grade-2 { grid-template-columns: 1fr 1fr; } }
+
+.decisao-linha { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.chip {
+  font-weight: 700; font-size: 13px; letter-spacing: 0.3px;
+  padding: 4px 12px; border-radius: 999px; border: 1.5px solid var(--eixo);
+  color: var(--tinta-2);
+}
+.chip.comprar { color: var(--positivo); border-color: var(--positivo); }
+.chip.vender { color: var(--atencao); border-color: var(--atencao); }
+.justificativa { margin: 0 0 8px; }
+
+.lista-info { margin: 0; display: grid; gap: 8px; }
+.lista-info div { display: flex; justify-content: space-between; gap: 12px; }
+.lista-info dt { color: var(--tinta-2); }
+.lista-info dd { margin: 0; font-weight: 500; }
+.contagem { font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------- gráficos */
+.grafico { position: relative; }
+.grafico svg { display: block; width: 100%; height: auto; }
+.grafico:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; border-radius: 6px; }
+
+.dica {
+  position: absolute; pointer-events: none; z-index: 2;
+  background: var(--superficie); border: 1px solid var(--borda);
+  border-radius: 8px; padding: 6px 10px; font-size: 12.5px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  white-space: nowrap; transform: translate(-50%, calc(-100% - 10px));
+}
+.dica .dica-valor { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
+.dica .chave-linha { display: inline-block; width: 12px; height: 0; border-top: 2.5px solid currentColor; border-radius: 2px; }
+.dica .dica-hora { color: var(--tinta-2); }
+
+.grafico-vazio { color: var(--tinta-2); font-size: 13px; padding: 24px 0; }
+
+/* legenda do gráfico de preço: símbolo colorido + texto em tinta (a cor nunca
+   carrega a identidade sozinha — a forma ▲/▼ e o rótulo dizem o que é) */
+.grafico-legenda {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 0 0 8px; font-size: 12.5px; color: var(--tinta-2);
+}
+.grafico-legenda .chave-linha {
+  display: inline-block; width: 14px; height: 0;
+  border-top: 2.5px solid currentColor; border-radius: 2px; vertical-align: middle;
+}
+.chave-preco { color: var(--serie-preco); }
+.chave-marca { font-size: 11px; }
+.chave-compra { color: var(--marca-compra); }
+.chave-venda { color: var(--marca-venda); }
+.chave-venda-stop { color: var(--marca-venda-stop); }
+.venda-stop { color: var(--marca-venda-stop); font-weight: 600; }
+.venda-liquidacao { color: var(--marca-venda-liquidacao); font-weight: 600; }
+
+.dados-tabela { margin-top: 8px; font-size: 13px; }
+.dados-tabela summary { cursor: pointer; color: var(--tinta-2); }
+.dados-tabela table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+.dados-tabela th, .dados-tabela td {
+  text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--grade);
+  font-variant-numeric: tabular-nums;
+}
+.dados-tabela th { color: var(--tinta-2); font-weight: 500; }
+
+/* ---------------------------------------------------------------- tabelas */
+.rolagem { overflow-x: auto; }
+.tabela-operacoes { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.tabela-operacoes th, .tabela-operacoes td {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grade);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.tabela-operacoes th { color: var(--tinta-2); font-weight: 500; position: sticky; top: 0; background: var(--superficie); }
+.tabela-operacoes td.justificativa-celula {
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Colunas numéricas alinhadas à direita: com tabular-nums, as casas decimais
+   ficam na mesma vertical e dá para comparar linhas passando o olho, sem ler
+   número por número. Na tabela da visão geral são as colunas 4 a 8 (preço,
+   quantidade, valor da posição, se vender agora, lucro total). */
+.tabela-numerica td:nth-child(n + 4):nth-child(-n + 8),
+.tabela-numerica th:nth-child(n + 4):nth-child(-n + 8) {
+  text-align: right;
+}
+/* A linha de agrupamento por plataforma ocupa a largura toda: não alinhar. */
+.tabela-numerica td.linha-grupo-plataforma { text-align: left; }
+.tabela-operacoes tbody tr:hover td { background: color-mix(in srgb, var(--acento) 6%, transparent); }
+
+/* Visão geral: cabeçalho que separa os ativos por plataforma na tabela */
+.tabela-operacoes td.linha-grupo-plataforma,
+.linha-grupo-plataforma td {
+  background: var(--plano);
+  color: var(--tinta-2); font-weight: 600; font-size: 12px;
+  letter-spacing: .04em; text-transform: uppercase;
+  border-bottom: 2px solid var(--grade); white-space: nowrap;
+}
+
+/* Estado do ativo na tabela: ponto + palavra (a cor nunca decide sozinha). */
+.ponto-estado {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 7px; vertical-align: middle;
+}
+.ponto-estado.ligado { background: var(--positivo); }
+.ponto-estado.desligado { background: var(--tinta-mutada); }
+.linha-desligada td { opacity: 0.55; }
+.linha-desligada:hover td { opacity: 1; }
+
+.rotulo-status { font-size: 12px; font-weight: 600; }
+.rotulo-status.executada { color: var(--positivo); }
+.rotulo-status.sugerida { color: var(--atencao); }
+.rotulo-status.erro, .rotulo-status.rejeitada_saldo, .rotulo-status.rejeitada_regras { color: var(--negativo); }
+
+/* Card de recomendação do modo assistido: destaque para agir */
+.cartao-recomendacao { border: 1px solid var(--atencao); }
+.recomendacao-acao { font-size: 20px; font-weight: 700; margin: 4px 0; }
+
+/* posições (lotes): cor nunca sozinha — o rótulo diz o status por extenso */
+.rotulo-posicao { font-size: 12px; font-weight: 600; color: var(--tinta-2); }
+.rotulo-posicao.LUCRO { color: var(--positivo); }
+.rotulo-posicao.VENDA { color: var(--atencao); }
+/* Números com sinal. A cor NUNCA vem sozinha (mesma regra dos badges e dos
+   marcadores dos gráficos): a seta carrega o significado para quem não
+   distingue verde de vermelho, e dá o "bate o olho e entende" no meio de uma
+   tabela cheia de números parecidos. */
+.valor-positivo, .valor-negativo { font-weight: 600; }
+.valor-positivo { color: var(--positivo); }
+.valor-negativo { color: var(--negativo); }
+.valor-positivo::before { content: '▲ '; font-size: 0.85em; }
+.valor-negativo::before { content: '▼ '; font-size: 0.85em; }
+
+/* Selo de status do bot (heartbeat) na visão geral. */
+.status-bot {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;
+  font-size: 13px; font-weight: 600; border: 1px solid var(--borda);
+}
+.status-bot.online { color: var(--positivo); border-color: var(--positivo); }
+.status-bot.offline { color: var(--negativo); border-color: var(--negativo); }
+
+/* ------------------------------------------------------------------ forms */
+label { display: grid; gap: 4px; font-size: 13.5px; color: var(--tinta-2); }
+input[type="email"], input[type="password"], input[type="number"], input[type="text"], textarea {
+  font: inherit; color: var(--tinta);
+  background: var(--plano); border: 1px solid var(--eixo); border-radius: 8px;
+  padding: 8px 10px;
+}
+textarea { width: 100%; resize: vertical; font-size: 13.5px; line-height: 1.5; }
+input:focus-visible, textarea:focus-visible { outline: 2px solid var(--acento); outline-offset: 1px; }
+
+fieldset { border: 1px solid var(--grade); border-radius: 8px; padding: 12px; margin: 0 0 14px; }
+legend { font-size: 13px; font-weight: 600; color: var(--tinta); padding: 0 6px; }
+.form-config fieldset { display: grid; gap: 10px; }
+.grade-campos { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+.alternador { display: flex; gap: 10px; align-items: flex-start; flex-direction: row; color: var(--tinta); }
+.alternador input { width: 18px; height: 18px; margin-top: 2px; }
+
+.form-acoes { display: flex; align-items: center; gap: 12px; }
+.botao-primario {
+  font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--acento); color: #fff; border: none; border-radius: 8px;
+  padding: 9px 18px;
+}
+.botao-primario:hover { filter: brightness(1.08); }
+.botao-fantasma {
+  font: inherit; cursor: pointer; color: var(--tinta-2);
+  background: transparent; border: 1px solid var(--eixo); border-radius: 8px;
+  padding: 6px 12px;
+}
+.botao-perigo {
+  font: inherit; font-weight: 600; cursor: pointer;
+  background: #b42318; color: #fff; border: none; border-radius: 8px;
+  padding: 9px 18px;
+}
+.botao-perigo:hover { filter: brightness(1.1); }
+.rodape { margin-top: 24px; text-align: center; }
+
+/* ------------------------ parada de emergência + seletor de modo (V6.2) */
+.banner-travado {
+  background: #b42318; color: #fff; font-weight: 600;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+}
+/* Liquidação em curso (V8). Cor distinta da parada de emergência: são estados
+   diferentes e confundi-los na tela seria caro — um para tudo, o outro vende. */
+.banner-modo-vendas {
+  background: #8a5a00; color: #fff; font-weight: 600;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+}
+.cartao-controle { margin-bottom: 16px; }
+.controle-linha {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.controle-linha h2 { margin: 0; }
+.seletor-modo { display: inline-flex; gap: 6px; }
+.seletor-modo .botao-fantasma.ativo {
+  color: #fff; background: var(--acento); border-color: var(--acento);
+}
+/* Ajustes manuais do comparativo × CDI (Selic e % do CDI) */
+.renda-cdi-controles {
+  display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
+}
+.renda-cdi-config {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+}
+.campo-inline {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.8rem; color: var(--tinta-2);
+}
+.campo-inline input {
+  font: inherit; width: 92px; padding: 6px 8px;
+  border: 1px solid var(--eixo); border-radius: 8px;
+  background: var(--plano); color: var(--tinta);
+}
+.renda-cdi-config .botao-primario { padding: 7px 16px; }
+
+/* -------------------------------------------------- relatório de decisões */
+.relatorio-titulo {
+  margin: 16px 0 6px; font-size: 12px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--tinta-mutada);
+}
+.relatorio-linha {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 6px 0; border-bottom: 1px solid var(--grade);
+  font-size: 14px; font-variant-numeric: tabular-nums;
+}
+.relatorio-linha > span:first-child { color: var(--tinta-2); }
+.relatorio-linha > span:last-child { text-align: right; }
+
+/* ------------------------------------------------------- seção de ajustes
+   Fica no rodapé da visão geral e é deliberadamente DISCRETA: configuração
+   usada uma vez não pode disputar atenção com o patrimônio. */
+.secao-titulo {
+  margin: 32px 0 10px; font-size: 13px; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--tinta-mutada);
+}
+.cartao-config { padding-top: 6px; padding-bottom: 6px; }
+.cartao-config details > summary {
+  cursor: pointer; list-style: none; padding: 10px 2px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.cartao-config details > summary::-webkit-details-marker { display: none; }
+.cartao-config details > summary::after {
+  content: '▾'; margin-left: auto; color: var(--tinta-mutada); transition: transform .15s;
+}
+.cartao-config details[open] > summary::after { transform: rotate(180deg); }
+.config-titulo { font-weight: 600; }
+.config-resumo { font-size: 12.5px; color: var(--tinta-2); }
+.config-resumo.ligado { color: var(--positivo); }
+.config-corpo { padding: 4px 2px 12px; border-top: 1px solid var(--grade); margin-top: 4px; }
+.campo-switch { flex-direction: row; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 0.9rem; }
+
+.passos-telegram { margin: 8px 0 14px; padding-left: 20px; line-height: 1.5; }
+.passos-telegram li { margin-bottom: 6px; }
+.telegram-status {
+  margin: 10px 0 0; padding: 9px 12px; border-radius: 8px;
+  font-size: 0.85rem; border: 1px solid var(--eixo);
+}
+.telegram-status.ok { color: var(--positivo); border-color: var(--positivo); }
+.telegram-status.erro { color: var(--negativo); border-color: var(--negativo); }
+
+/* Avisos no Telegram (V7): checkboxes em linha, não na coluna dos campos
+   numéricos — daí sobrescrever o .campo-inline dentro deste card. */
+.tg-eventos {
+  border: 1px solid var(--eixo); border-radius: 10px;
+  padding: 10px 14px; margin: 12px 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.tg-eventos legend { font-size: 0.8rem; color: var(--tinta-2); padding: 0 6px; }
+.tg-eventos .campo-inline,
+#tela-geral .cartao > .controle-linha .campo-inline {
+  flex-direction: row; align-items: center; gap: 8px;
+}
+.tg-eventos .campo-inline input[type='checkbox'],
+#tg-ativo { width: auto; }
+#form-telegram label { display: block; margin-bottom: 10px; font-size: 0.8rem; color: var(--tinta-2); }
+#form-telegram > label input {
+  font: inherit; width: 100%; max-width: 420px; margin-top: 4px; padding: 7px 9px;
+  border: 1px solid var(--eixo); border-radius: 8px;
+  background: var(--plano); color: var(--tinta);
+}
+
+/* Supervisão semanal (V7.2): listas de mudanças/palpites e o histórico de
+   versões da camada de prompt. */
+.lista-simples { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 6px; color: var(--tinta-2); }
+.lista-simples:empty::after { content: 'nada nesta rodada'; font-style: italic; }
+/* Aviso de que o diagnóstico abaixo descreve uma camada que não está mais em
+   vigor (o dono editou o texto depois da rodada). */
+.sup-defasada {
+  border-left: 3px solid var(--atencao); background: var(--plano);
+  border-radius: 6px; padding: 8px 12px; margin-bottom: 12px;
+  font-size: 13px; color: var(--tinta);
+}
+.sup-versao {
+  border: 1px solid var(--eixo); border-radius: 10px; padding: 10px 12px; margin-top: 10px;
+}
+.sup-versao summary { cursor: pointer; color: var(--tinta-2); font-size: 0.85rem; }
+.sup-versao pre {
+  white-space: pre-wrap; word-break: break-word; margin: 10px 0 0;
+  font-size: 0.8rem; color: var(--tinta);
+}

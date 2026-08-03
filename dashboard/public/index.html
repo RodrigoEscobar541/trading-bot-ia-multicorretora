@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IA Investidora — Painel</title>
+  <!-- ?v= quebra o cache de 1h do hosting quando os arquivos mudam de era -->
+  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📈</text></svg>" />
+</head>
+<body>
+  <!-- ===================== login ===================== -->
+  <section id="tela-login" class="tela-login" hidden>
+    <form id="form-login" class="cartao login-cartao">
+      <h1>IA Investidora</h1>
+      <p class="texto-secundario">Entre com a conta criada no Firebase Authentication.</p>
+      <label>E-mail
+        <input type="email" id="login-email" autocomplete="username" required />
+      </label>
+      <label>Senha
+        <input type="password" id="login-senha" autocomplete="current-password" required />
+      </label>
+      <button type="submit" id="botao-login" class="botao-primario">Entrar</button>
+      <p id="login-erro" class="texto-erro" role="alert" hidden></p>
+    </form>
+  </section>
+
+  <!-- ===================== painel ===================== -->
+  <div id="painel" class="leiaute" hidden>
+    <!-- menu lateral (hambúrguer no mobile) -->
+    <aside id="menu-lateral" class="menu-lateral">
+      <div class="menu-topo">
+        <span class="menu-marca">IA Investidora</span>
+        <button id="botao-fechar-menu" class="botao-fantasma so-mobile" type="button" aria-label="Fechar menu">✕</button>
+      </div>
+      <nav id="menu-nav" class="menu-nav" aria-label="Navegação">
+        <!-- preenchido pelo app.js: visão geral + plataformas + ativos -->
+      </nav>
+      <div class="menu-rodape">
+        <span id="usuario-email" class="texto-secundario"></span>
+        <button id="botao-sair" class="botao-fantasma" type="button">Sair</button>
+      </div>
+    </aside>
+    <div id="fundo-menu" class="fundo-menu" hidden></div>
+
+    <main class="conteudo">
+      <header class="topo">
+        <button id="botao-menu" class="botao-fantasma so-mobile" type="button" aria-label="Abrir menu">☰</button>
+        <div class="topo-titulo">
+          <h1 id="titulo-tela">Visão geral</h1>
+          <span id="badge-modo" class="badge" hidden>—</span>
+        </div>
+      </header>
+
+      <!-- ============ tela: visão geral (consolidada) ============ -->
+      <section id="tela-geral" hidden>
+        <div id="status-bot" class="status-bot" hidden></div>
+        <div id="banner-travado" class="banner-travado" hidden></div>
+        <div id="banner-modo-vendas" class="banner-modo-vendas" hidden></div>
+        <section class="tiles">
+          <article class="cartao tile tile-heroi">
+            <span class="tile-rotulo">Patrimônio consolidado (em BRL)</span>
+            <span id="geral-patrimonio" class="tile-valor tile-valor-heroi">—</span>
+            <span id="geral-caixa" class="tile-delta"></span>
+          </article>
+          <article id="tile-nao-realizado" class="cartao tile tile-sinal">
+            <span class="tile-rotulo">Se vender tudo agora (líquido de taxas, BRL)</span>
+            <span id="geral-nao-realizado" class="tile-valor">—</span>
+            <span id="geral-nao-realizado-nota" class="tile-delta"></span>
+          </article>
+        </section>
+        <section class="cartao">
+          <div class="controle-linha">
+            <h2 id="renda-cdi-titulo">Rendimento × 106% do CDI</h2>
+            <div class="renda-cdi-controles">
+              <div id="renda-cdi-modos" class="seletor-modo">
+                <button type="button" class="botao-fantasma ativo" data-modo="real">Real</button>
+                <button type="button" class="botao-fantasma" data-modo="simulacao">Simulação</button>
+              </div>
+              <form id="form-config-renda" class="renda-cdi-config" autocomplete="off">
+                <label class="campo-inline">Selic % a.a.
+                  <input id="input-selic" type="number" step="0.01" min="0" inputmode="decimal" placeholder="14,25" />
+                </label>
+                <label class="campo-inline">% do CDI
+                  <input id="input-percentual-cdi" type="number" step="1" min="1" inputmode="decimal" placeholder="106" />
+                </label>
+                <button type="submit" class="botao-primario">Salvar</button>
+              </form>
+            </div>
+          </div>
+          <p id="config-renda-msg" class="texto-secundario" aria-live="polite"></p>
+          <p id="renda-cdi-intro" class="texto-secundario">
+            O comparativo aparece quando o primeiro ativo entrar em modo REAL — só o lucro
+            realizado fora da simulação entra na conta.
+          </p>
+          <div class="rolagem" id="renda-cdi-tabela-wrap" hidden>
+            <table id="tabela-renda-cdi" class="tabela-operacoes">
+              <thead>
+                <tr><th>Período</th><th id="renda-cdi-col-bot">Robô (modo real)</th><th id="renda-cdi-col-bench">106% do CDI</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="renda-cdi-rodape" class="texto-secundario"></p>
+        </section>
+        <section class="cartao">
+          <h2>Ativos</h2>
+          <p class="texto-secundario">Clique em um ativo no menu para ver a tela completa dele.</p>
+          <div class="rolagem">
+            <table id="tabela-geral-ativos" class="tabela-operacoes tabela-numerica">
+              <thead>
+                <tr>
+                  <th>Ativo</th><th>Estado</th><th>Modo</th><th>Preço atual</th>
+                  <th>Posição (qtd)</th><th>Valor da posição</th><th>Se vender agora</th><th>Lucro total</th><th>Última decisão</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="cartao-relatorio" class="cartao" hidden>
+          <div class="controle-linha">
+            <h2>Relatório de decisões</h2>
+            <span id="relatorio-janela" class="texto-secundario"></span>
+          </div>
+          <p class="texto-secundario">Como o robô decidiu no período: quantas vezes agiu, como as posições
+            fecharam e quanto de risco cada ganho custou. Enviado no Telegram a cada 7 dias.</p>
+          <div id="relatorio-corpo"></div>
+        </section>
+
+        <!-- Ajustes e controles: ficam por ÚLTIMO de propósito. São usados uma
+             vez (Telegram) ou em emergência (travar) — não podem competir com
+             os números que a tela existe para mostrar. -->
+        <h2 class="secao-titulo">Ajustes</h2>
+        <section class="cartao cartao-config">
+          <details id="detalhes-telegram">
+            <summary>
+              <span class="config-titulo">🔔 Avisos no Telegram</span>
+              <span id="telegram-resumo" class="config-resumo">não configurado</span>
+            </summary>
+            <div class="config-corpo">
+              <ol class="passos-telegram texto-secundario">
+                <li>No Telegram, procure <strong>@BotFather</strong>, mande <code>/newbot</code> e guarde o <strong>token</strong>.</li>
+                <li><strong>Abra a conversa com o SEU bot novo e mande "oi"</strong> (ou clique em Iniciar).
+                  Sem este passo o Telegram não deixa o bot te escrever, e o passo 3 volta vazio.</li>
+                <li>Abra <code>https://api.telegram.org/bot&lt;SEU_TOKEN&gt;/getUpdates</code> e copie o número
+                  em <code>"chat":{"id":…}</code>.
+                  <strong>Atenção:</strong> é o id da SUA conversa, não o do bot — se você colar o id do
+                  bot, ele tenta mandar mensagem para si mesmo e o Telegram recusa.</li>
+              </ol>
+              <form id="form-telegram" autocomplete="off">
+                <label class="campo-inline campo-switch">
+                  <input id="tg-ativo" type="checkbox" /> Avisos ligados
+                </label>
+                <label>Token do bot
+                  <input id="tg-token" type="password" placeholder="deixe em branco para manter o atual" />
+                </label>
+                <label>Chat id
+                  <input id="tg-chat" type="text" inputmode="numeric" placeholder="123456789" />
+                </label>
+                <fieldset class="tg-eventos">
+                  <legend>Quando avisar</legend>
+                  <label class="campo-inline"><input id="tg-ev-venda" type="checkbox" /> Vendas (com lucro/prejuízo e stop-loss)</label>
+                  <label class="campo-inline"><input id="tg-ev-compra" type="checkbox" /> Compras</label>
+                  <label class="campo-inline"><input id="tg-ev-recomendacao" type="checkbox" /> Recomendações da Toro (assistida)</label>
+                  <label class="campo-inline"><input id="tg-ev-problema" type="checkbox" /> Problemas (quota da IA, corretora fora do ar)</label>
+                  <label class="campo-inline"><input id="tg-ev-relatorio" type="checkbox" /> Relatório semanal de decisões</label>
+                  <label class="campo-inline"><input id="tg-ev-supervisao" type="checkbox" /> Supervisão semanal (diagnóstico e mudanças no prompt)</label>
+                </fieldset>
+                <button type="submit" class="botao-primario">Salvar</button>
+              </form>
+              <p id="telegram-msg" class="texto-secundario" aria-live="polite"></p>
+              <p class="texto-secundario">
+                Ao salvar com os avisos ligados, o robô manda uma mensagem de confirmação no Telegram
+                em até 5 minutos — é assim que você sabe que o token e o chat id estão certos.
+              </p>
+            </div>
+          </details>
+          <!-- FORA do <details>: um erro de envio precisa aparecer mesmo com o
+               painel fechado (foi o que já nos custou uma sessão de depuração). -->
+          <div id="telegram-status" class="telegram-status" hidden></div>
+        </section>
+
+        <section class="cartao cartao-controle">
+          <div class="controle-linha">
+            <div>
+              <h2 id="controle-titulo">Parada de emergência</h2>
+              <p id="controle-descricao" class="texto-secundario">Interrompe TODA a operação do robô (análises e ordens, real e simulação). O bot continua no ar; nenhuma ordem é enviada até destravar.</p>
+            </div>
+            <button id="botao-travar" type="button" class="botao-perigo">⛔ Travar tudo</button>
+          </div>
+        </section>
+
+        <section class="cartao cartao-controle">
+          <div class="controle-linha">
+            <div>
+              <h2>Modo vendas (liquidação)</h2>
+              <p id="mv-descricao" class="texto-secundario">
+                Encerra a carteira: o robô para de comprar e passa a procurar a melhor saída para as
+                posições abertas. A tolerância a prejuízo começa em 0% e abre ao longo da janela.
+              </p>
+            </div>
+            <button id="botao-modo-vendas" type="button" class="botao-perigo">💰 Ligar modo vendas</button>
+          </div>
+          <form id="form-modo-vendas" class="renda-cdi-config" autocomplete="off">
+            <label class="campo-inline">Janela (dias)
+              <input type="number" id="mv-dias" min="1" max="90" step="1" />
+            </label>
+            <label class="campo-inline">Prejuízo máximo (%)
+              <input type="number" id="mv-perda" min="0" max="100" step="0.5" />
+            </label>
+            <button type="submit" class="botao-fantasma">Salvar</button>
+            <span id="mv-status" class="texto-secundario" role="status"></span>
+          </form>
+        </section>
+      </section>
+
+      <!-- ============ tela: um ativo ============ -->
+      <section id="tela-ativo" hidden>
+        <section class="tiles" aria-label="Estatísticas do ativo">
+          <article class="cartao tile tile-heroi">
+            <span class="tile-rotulo">Valor da posição no ativo</span>
+            <span id="tile-valor-posicao" class="tile-valor tile-valor-heroi">—</span>
+            <span id="tile-lucro-delta" class="tile-delta"></span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Caixa disponível</span>
+            <span id="tile-saldo-moeda" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Quantidade em carteira</span>
+            <span id="tile-saldo-ativo" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Preço atual</span>
+            <span id="tile-preco" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Preço médio de compra</span>
+            <span id="tile-preco-medio" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Lucro total realizado</span>
+            <span id="tile-lucro" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Operações</span>
+            <span id="tile-operacoes" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Taxa de acerto</span>
+            <span id="tile-acerto" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Maior lucro (operação)</span>
+            <span id="tile-maior-lucro" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile">
+            <span class="tile-rotulo">Maior prejuízo (operação)</span>
+            <span id="tile-maior-prejuizo" class="tile-valor">—</span>
+          </article>
+          <article class="cartao tile" id="tile-cartao-dividendos" hidden>
+            <span class="tile-rotulo">Dividendos recebidos (informativo)</span>
+            <span id="tile-dividendos" class="tile-valor">—</span>
+          </article>
+        </section>
+
+        <section class="grade-2">
+          <article class="cartao">
+            <h2>Última decisão da IA</h2>
+            <div class="decisao-linha">
+              <span id="chip-decisao" class="chip">—</span>
+              <span id="decisao-confianca" class="texto-secundario"></span>
+            </div>
+            <p id="decisao-justificativa" class="justificativa">Aguardando primeira análise…</p>
+            <p class="texto-secundario" id="decisao-horario"></p>
+          </article>
+          <article class="cartao">
+            <h2>Ciclo de análise</h2>
+            <dl class="lista-info">
+              <div><dt>Última análise</dt><dd id="info-ultima-analise">—</dd></div>
+              <div><dt>Última verificação</dt><dd id="info-ultima-verificacao">—</dd></div>
+              <div><dt>Próxima análise em</dt><dd id="info-contagem" class="contagem">—</dd></div>
+            </dl>
+          </article>
+        </section>
+
+        <!-- modo ASSISTIDO (ex.: Toro): o robô recomenda, você executa -->
+        <section class="cartao cartao-recomendacao" id="cartao-recomendacao" hidden>
+          <h2>📣 Recomendação para você executar</h2>
+          <p id="recomendacao-acao" class="recomendacao-acao">—</p>
+          <p id="recomendacao-detalhe" class="justificativa"></p>
+          <p class="texto-secundario">
+            O robô não envia ordens nesta plataforma: execute na corretora, se concordar, e
+            registre abaixo em "Registrar operação manual". A recomendação é substituída (ou
+            expirada) a cada nova análise.
+          </p>
+          <p class="texto-secundario" id="recomendacao-horario"></p>
+        </section>
+
+        <section class="cartao" id="cartao-operacao-manual" hidden>
+          <h2>Registrar operação manual</h2>
+          <p class="texto-secundario">
+            Registre aqui o que você executou na corretora — o robô aplica no livro de posições
+            no próximo ciclo (compra vira posição com o SEU preço; venda abate e realiza o lucro).
+            O <strong>DIVIDENDO</strong> é informativo (valor por ação × quantidade em carteira):
+            não mexe no caixa nem no lucro de trading.
+          </p>
+          <form id="form-op-manual" class="form-config">
+            <div class="grade-campos">
+              <label>Tipo
+                <select id="opman-tipo">
+                  <option value="COMPRA">COMPRA</option>
+                  <option value="VENDA">VENDA</option>
+                  <option value="DIVIDENDO">DIVIDENDO (informativo)</option>
+                </select>
+              </label>
+              <label id="opman-campo-quantidade">Quantidade (ações/unidades)
+                <input type="number" id="opman-quantidade" min="0" step="0.00000001" required />
+              </label>
+              <label id="opman-campo-preco">Preço por unidade (na moeda da plataforma)
+                <input type="number" id="opman-preco" min="0" step="0.01" required />
+              </label>
+              <label id="opman-campo-valor-acao" hidden>Valor do dividendo por ação
+                <input type="number" id="opman-valor-acao" min="0" step="0.0000001" disabled />
+              </label>
+              <label>Data e hora da execução
+                <input type="datetime-local" id="opman-data" />
+              </label>
+              <label id="opman-campo-taxa">Taxa total da operação (opcional — vazio usa a % do ativo)
+                <input type="number" id="opman-taxa" min="0" step="0.01" />
+              </label>
+            </div>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Registrar operação</button>
+              <span id="opman-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+          <p class="texto-secundario" id="opman-pendentes"></p>
+        </section>
+
+        <section class="cartao">
+          <h2>Posições abertas</h2>
+          <p class="texto-secundario">Cada compra é uma posição independente: a IA só vende posições com lucro líquido positivo.</p>
+          <div class="rolagem">
+            <table id="tabela-posicoes" class="tabela-operacoes">
+              <thead>
+                <tr>
+                  <th>Abertura</th><th>Origem</th><th>Status</th><th>Quantidade</th>
+                  <th>Preço de compra</th><th>Preço mín. p/ lucrar</th><th>Stop-loss</th><th>Lucro se vender agora</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="posicoes-vazio" class="texto-secundario" hidden>Nenhuma posição aberta neste modo.</p>
+        </section>
+
+        <section class="cartao">
+          <h2>Preço e operações</h2>
+          <p class="grafico-legenda">
+            <span><span class="chave-linha chave-preco"></span> preço</span>
+            <span><span class="chave-marca chave-compra">▲</span> compra</span>
+            <span><span class="chave-marca chave-venda">▼</span> venda (IA)</span>
+            <span><span class="chave-marca chave-venda-stop">▼</span> venda por stop-loss (Motor)</span>
+            <span class="texto-secundario">as operações executadas aparecem sobre a linha do preço — a venda por stop-loss é a única que pode sair no prejuízo</span>
+            <span class="texto-secundario">o eixo do tempo pula os períodos sem negociação (noite, fim de semana) — só o que teve preço ocupa espaço, então a distância horizontal NÃO é proporcional ao tempo. As linhas tracejadas marcam a virada do dia, e a pequena interrupção antes de cada uma é o período fechado.</span>
+          </p>
+          <div id="grafico-preco" class="grafico"></div>
+          <details class="dados-tabela">
+            <summary>Ver dados</summary>
+            <div class="rolagem"><table id="tabela-preco"></table></div>
+          </details>
+        </section>
+
+        <section class="grade-2">
+          <article class="cartao">
+            <h2>Patrimônio da plataforma</h2>
+            <div id="grafico-patrimonio" class="grafico"></div>
+            <details class="dados-tabela">
+              <summary>Ver dados</summary>
+              <div class="rolagem"><table id="tabela-patrimonio"></table></div>
+            </details>
+          </article>
+          <article class="cartao">
+            <h2>Lucro do ativo ao longo do tempo</h2>
+            <div id="grafico-lucro" class="grafico"></div>
+            <details class="dados-tabela">
+              <summary>Ver dados</summary>
+              <div class="rolagem"><table id="tabela-lucro"></table></div>
+            </details>
+          </article>
+        </section>
+
+        <section class="cartao">
+          <h2>Histórico de operações</h2>
+          <div class="rolagem">
+            <table id="tabela-operacoes" class="tabela-operacoes">
+              <thead>
+                <tr>
+                  <th>Horário</th><th>Tipo</th><th>Preço</th><th>Quantidade</th>
+                  <th>Valor</th><th>Taxa</th><th>Lucro líq.</th><th>Status</th><th>Modo</th><th>Justificativa da IA</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="operacoes-vazio" class="texto-secundario" hidden>Nenhuma operação registrada ainda.</p>
+        </section>
+
+        <section class="cartao">
+          <h2>Configurações do ativo</h2>
+          <form id="form-config-ativo" class="form-config">
+            <fieldset>
+              <legend>Operação</legend>
+              <label class="alternador">
+                <input type="checkbox" id="cfg-ativo-ligado" />
+                <span>Ativo LIGADO (o robô analisa e opera este ativo)</span>
+              </label>
+              <label class="alternador">
+                <input type="checkbox" id="cfg-modo-simulacao" />
+                <span>Modo Simulação ativo (ordens fictícias; desmarcar envia ordens REAIS à plataforma)</span>
+              </label>
+            </fieldset>
+            <fieldset>
+              <legend>Parâmetros</legend>
+              <div class="grade-campos">
+                <label>Tempo entre análises (min)
+                  <input type="number" id="cfg-tempo-analises" min="1" step="1" required />
+                </label>
+                <label>Variação mínima p/ chamar a IA (%)
+                  <input type="number" id="cfg-variacao-minima" min="0" step="0.01" required />
+                </label>
+                <label>Divergência máx. na execução (%)
+                  <input type="number" id="cfg-divergencia-max" min="0" step="0.1" required />
+                </label>
+                <label>Tempo de reset (dias)
+                  <input type="number" id="cfg-tempo-reset" min="1" step="1" required />
+                </label>
+                <label>Taxa de compra (%)
+                  <input type="number" id="cfg-taxa-compra" min="0" step="0.01" required />
+                </label>
+                <label>Taxa de venda (%)
+                  <input type="number" id="cfg-taxa-venda" min="0" step="0.01" required />
+                </label>
+                <label>Limite de perda diária (%) — 0 desativa
+                  <input type="number" id="cfg-limite-perda" min="0" step="0.1" required />
+                </label>
+                <label>Orçamento do ativo (% do patrimônio da plataforma)
+                  <input type="number" id="cfg-orcamento" min="0" max="100" step="1" required />
+                </label>
+                <label>Distância máxima do stop-loss (%)
+                  <input type="number" id="cfg-stop-distancia" min="0.1" max="90" step="0.5" required />
+                </label>
+                <label>Folga do stop-loss (%) — distância MÍNIMA entre o preço e o chão, e a distância em que o robô sobe o chão sozinho quando a posição está em lucro. Chão que a IA peça mais perto que isso é recusado
+                  <input type="number" id="cfg-stop-trailing" min="0.1" max="50" step="0.1" required />
+                </label>
+                <label>Ordem mínima (valor na moeda)
+                  <input type="number" id="cfg-min-valor" min="0" step="0.01" required />
+                </label>
+                <label>Ordem mínima (quantidade)
+                  <input type="number" id="cfg-min-qtd" min="0" step="0.00000001" required />
+                </label>
+              </div>
+              <p id="cfg-orcamento-soma" class="texto-secundario"></p>
+            </fieldset>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar configurações do ativo</button>
+              <span id="config-ativo-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="grade-2">
+          <article class="cartao">
+            <h2>Prompt do ativo</h2>
+            <p class="texto-secundario">Instruções específicas deste ativo, somadas ao template da plataforma no prompt final. <span id="prompt-versao"></span></p>
+            <form id="form-prompt">
+              <textarea id="texto-prompt" rows="8" spellcheck="false" placeholder="Ex.: Seja mais conservador com este ativo…"></textarea>
+              <div class="form-acoes">
+                <button type="submit" class="botao-primario">Salvar prompt</button>
+                <span id="prompt-status" class="texto-secundario" role="status"></span>
+              </div>
+            </form>
+          </article>
+          <article class="cartao">
+            <h2>Contexto para a IA</h2>
+            <p class="texto-secundario">Notícias, opiniões e informações macro que a IA deve considerar (a data da última edição é enviada junto). <span id="contexto-atualizado"></span></p>
+            <p id="contexto-validade" class="texto-secundario"></p>
+            <form id="form-contexto">
+              <textarea id="texto-contexto" rows="8" spellcheck="false" placeholder="Ex.: ETFs com fluxo de entrada forte nesta semana…"></textarea>
+              <div class="form-acoes">
+                <button type="submit" class="botao-primario">Salvar contexto</button>
+                <span id="contexto-status" class="texto-secundario" role="status"></span>
+              </div>
+            </form>
+          </article>
+        </section>
+
+        <section class="cartao">
+          <h2>Zona de risco</h2>
+          <p class="texto-secundario">
+            Excluir o ativo apaga configurações, histórico, operações e posições — PARA SEMPRE.
+            Só é possível com o ativo DESLIGADO (desligue nas configurações acima e salve).
+          </p>
+          <div class="form-acoes">
+            <button id="botao-excluir-ativo" type="button" class="botao-perigo">Excluir este ativo</button>
+            <span id="excluir-ativo-status" class="texto-secundario" role="status"></span>
+          </div>
+        </section>
+      </section>
+
+      <!-- ============ tela: regras gerais da IA (globais) ============ -->
+      <section id="tela-regras" hidden>
+        <section class="cartao">
+          <h2>Regras gerais da IA</h2>
+          <p class="texto-secundario">
+            Regras simples e diretas que valem para TODOS os ativos e plataformas — são a primeira
+            camada do prompt, com prioridade sobre template, prompt do ativo e contexto.
+            <span id="regras-versao"></span>
+          </p>
+          <form id="form-regras">
+            <textarea id="texto-regras" rows="18" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar regras gerais</button>
+              <span id="regras-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="cartao">
+          <h2>Regras do modo vendas (liquidação)</h2>
+          <p class="texto-secundario">
+            SUBSTITUEM as regras acima enquanto o modo vendas estiver ligado — o analista deixa de
+            procurar entrada e passa a procurar a melhor saída. Ligar/desligar o modo é na Visão geral.
+            <span id="regras-venda-versao"></span>
+          </p>
+          <form id="form-regras-venda">
+            <textarea id="texto-regras-venda" rows="18" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar regras de liquidação</button>
+              <span id="regras-venda-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <!-- ============ tela: supervisão semanal (V7.2) ============ -->
+      <section id="tela-supervisao" hidden>
+        <section class="cartao">
+          <h2>Supervisão semanal</h2>
+          <p class="texto-secundario">
+            Uma vez por semana, um segundo agente de IA revisa como o analista decidiu — o que ele
+            comprou, o que deixou de vender, como as posições fecharam — e reescreve a camada de
+            prompt abaixo, que passa a ser enviada ao analista em toda análise. Ele nunca emite
+            ordens: só escreve este texto.
+          </p>
+          <dl class="lista-info">
+            <div><dt>Última rodada</dt><dd id="sup-gerado">—</dd></div>
+            <div><dt>Versão em vigor</dt><dd id="sup-versao">—</dd></div>
+            <div><dt>Modelo usado</dt><dd id="sup-modelo">—</dd></div>
+            <div><dt>Confiança na amostra</dt><dd id="sup-confianca">—</dd></div>
+          </dl>
+          <div class="form-acoes">
+            <label class="alternador">
+              <input type="checkbox" id="sup-ativo" />
+              <span>Enviar esta camada ao analista</span>
+            </label>
+            <button type="button" id="btn-sup-rodar" class="botao-fantasma">▶ Rodar agora</button>
+            <span id="sup-acao-status" class="texto-secundario" role="status"></span>
+          </div>
+        </section>
+
+        <section class="cartao">
+          <h2>Diagnóstico da última rodada</h2>
+          <p id="sup-defasada" class="sup-defasada" hidden></p>
+          <p id="sup-diagnostico" class="texto-secundario">Nenhuma supervisão executada ainda.</p>
+          <h3>O que mudou no prompt do analista</h3>
+          <ul id="sup-mudancas" class="lista-simples"></ul>
+          <h3>Observações sobre posições abertas</h3>
+          <ul id="sup-palpites" class="lista-simples"></ul>
+        </section>
+
+        <section class="cartao">
+          <h2>Camada em vigor</h2>
+          <p class="texto-secundario">
+            Você pode editar este texto à mão — ele vale até a próxima rodada, que o reescreve.
+            <span id="sup-origem"></span>
+          </p>
+          <form id="form-supervisao">
+            <textarea id="texto-supervisao" rows="16" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar camada</button>
+              <span id="sup-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="cartao">
+          <h2>Versões anteriores</h2>
+          <p class="texto-secundario">As 5 últimas versões, para voltar atrás se uma rodada piorar as coisas.</p>
+          <div id="sup-historico"></div>
+        </section>
+
+        <section class="cartao">
+          <h2>Instruções do supervisor</h2>
+          <p class="texto-secundario">
+            O prompt do próprio agente supervisor: o que ele deve procurar, como deve escrever a
+            camada e o que ele nunca pode fazer. <span id="sup-prompt-versao"></span>
+          </p>
+          <form id="form-sup-prompt">
+            <textarea id="texto-sup-prompt" rows="18" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar instruções</button>
+              <span id="sup-prompt-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <!-- ============ tela: plataforma ============ -->
+      <section id="tela-plataforma" hidden>
+        <section class="cartao">
+          <h2>Status da plataforma</h2>
+          <dl class="lista-info">
+            <div><dt>Autenticação na corretora</dt><dd id="status-conexao">—</dd></div>
+            <div><dt>Mercado (pregão)</dt><dd id="status-mercado">—</dd></div>
+          </dl>
+          <p class="texto-secundario">O bot testa a autenticação a cada hora e consulta o pregão (com feriados) direto na corretora.</p>
+        </section>
+        <!-- plataformas ASSISTIDAS: o caixa é informado pelo dono -->
+        <section class="cartao" id="cartao-caixa-manual" hidden>
+          <h2>Caixa da corretora (manual)</h2>
+          <p class="texto-secundario">
+            Nesta plataforma não há API: informe quanto dinheiro você tem disponível na corretora.
+            O robô usa esse caixa para dimensionar as recomendações de compra (orçamento por ativo);
+            compras/vendas/dividendos registrados atualizam o valor sozinhos.
+          </p>
+          <p id="caixa-manual-atual" class="texto-secundario">Caixa atual: —</p>
+          <form id="form-caixa-manual" class="form-config">
+            <div class="grade-campos">
+              <label>Caixa disponível (na moeda da plataforma)
+                <input type="number" id="caixa-manual-valor" min="0" step="0.01" required />
+              </label>
+            </div>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar caixa</button>
+              <span id="caixa-manual-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="cartao">
+          <h2>Chaves e IA da plataforma</h2>
+          <form id="form-plataforma" class="form-config">
+            <fieldset>
+              <legend>Chave da IA <span class="texto-secundario">(deixe em branco para manter a atual)</span></legend>
+              <label>API Key da IA (Gemini)
+                <input type="password" id="cfg-api-key-ia" autocomplete="off" />
+              </label>
+            </fieldset>
+            <fieldset id="bloco-cred-corretora">
+              <legend id="cred-corretora-legenda">Credenciais da corretora <span class="texto-secundario">(deixe em branco para manter a atual)</span></legend>
+              <div id="campos-api-corretora"><!-- campos por conector, preenchidos pelo app.js --></div>
+            </fieldset>
+            <fieldset>
+              <legend>Cadeia de modelos da IA</legend>
+              <label>Modelos em ordem de prioridade, separados por vírgula (cada um tem quota diária própria; o bot cai para o próximo quando ela esgota)
+                <input type="text" id="cfg-modelos-ia" placeholder="gemini-3.5-flash, gemini-3-flash-preview, gemini-3.1-flash-lite" />
+              </label>
+            </fieldset>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar plataforma</button>
+              <span id="plataforma-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+        <section class="cartao">
+          <h2>Cadastrar novo ativo</h2>
+          <p class="texto-secundario" id="novo-ativo-dica">Informe o código do ativo negociado nesta plataforma.</p>
+          <form id="form-novo-ativo" class="form-config">
+            <div class="grade-campos">
+              <label>Código (ticker)
+                <input type="text" id="novo-ativo-codigo" maxlength="12" autocomplete="off" required placeholder="Ex.: AAPL" />
+              </label>
+              <label>Nome do ativo
+                <input type="text" id="novo-ativo-nome" maxlength="40" autocomplete="off" required placeholder="Ex.: Apple" />
+              </label>
+            </div>
+            <p class="texto-secundario">
+              O ativo nasce DESLIGADO, em modo simulação e com orçamento 0% — configure e
+              ligue na tela dele quando estiver pronto.
+            </p>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Cadastrar ativo</button>
+              <span id="novo-ativo-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+        <section class="cartao">
+          <h2>Template da plataforma (prompt padrão)</h2>
+          <p class="texto-secundario">Comportamento padrão de TODOS os ativos desta plataforma. Editar aqui muda o prompt de todos no próximo ciclo. <span id="template-versao"></span></p>
+          <form id="form-template">
+            <textarea id="texto-template" rows="18" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar template</button>
+              <span id="template-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <footer class="rodape texto-secundario">
+        Os dados atualizam em tempo real a partir do Firestore. A IA nunca calcula — todos os
+        indicadores são computados pelo robô.
+      </footer>
+    </main>
+  </div>
+
+  <script type="module" src="app.js?v=12"></script>
+</body>
+</html>

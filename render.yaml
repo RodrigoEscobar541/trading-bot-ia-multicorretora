@@ -1,0 +1,78 @@
+# render.yaml — blueprint dos DOIS bots 24/7 no Render (render.com).
+#
+# Arquitetura de dois bots por região (ver ROADMAP.md, V6.1): o mesmo binário
+# roda em DUAS instâncias com escopos DISJUNTOS de plataforma, para respeitar
+# as restrições de rede de cada corretora:
+#   - bot-br  → MB (Mercado Bitcoin). O WAF do MB barra IP estrangeiro/datacenter
+#               fora do Brasil; roda em região US (Oregon). É a instância
+#               PRIMÁRIA (migração/seed no boot + recálculo de renda_real × CDI).
+#   - bot-sg  → BN, TT, TORO. A Binance BLOQUEIA IP dos EUA (HTTP 451); roda em
+#               região fora dos EUA (Singapore). Instância secundária.
+# Escopos disjuntos = nenhum ativo é processado por dois bots → sem ordem
+# duplicada. O controle é por env: BOT_PLATAFORMAS (CSV) e BOT_PRIMARIO.
+#
+# Uso: "New +" → "Blueprint" → conectar este repositório. As variáveis com
+# sync: false são pedidas na criação e NUNCA ficam no repositório (chaves).
+#
+# ATENÇÃO — plano FREE:
+#   - Cada serviço hiberna após ~15 min sem tráfego HTTP: configure UM monitor
+#     externo (ex.: UptimeRobot) por serviço, pingando a URL de saúde a cada
+#     5–10 min. Reinícios são inofensivos (todo o estado vive no Firestore).
+#   - O Free tem TETO de horas de instância por mês na CONTA (~750 h). Dois
+#     serviços 24/7 (~1.440 h) ESTOURAM esse teto — provavelmente é preciso um
+#     plano pago em pelo menos um dos serviços. Conferir em Billing.
+#   - Região Singapore/Frankfurt pode não estar disponível no Free em toda
+#     conta — se faltar, Frankfurt também resolve o bloqueio da Binance.
+
+services:
+  # ---------------------------------------------------------------- bot-br (MB)
+  - type: web
+    name: ia-investidora-bot-br
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: node src/scheduler.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: BOT_PLATAFORMAS # esta instância só cuida do Mercado Bitcoin
+        value: MB
+      - key: BOT_PRIMARIO # instância que faz migração/seed + renda_real × CDI
+        value: "true"
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON # conteúdo integral do JSON da service account
+        sync: false
+      - key: GEMINI_API_KEY # opcional: só se api_key_ia do Firestore estiver vazio
+        sync: false
+      - key: MB_API_TOKEN_ID # opcional: fallback do Firestore
+        sync: false
+      - key: MB_API_TOKEN_SECRET
+        sync: false
+
+  # -------------------------------------------------- bot-sg (Binance/TT/Toro)
+  - type: web
+    name: ia-investidora-bot-sg
+    runtime: node
+    plan: free
+    region: singapore # fora dos EUA: a Binance bloqueia IP dos EUA (451)
+    buildCommand: npm install
+    startCommand: node src/scheduler.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: BOT_PLATAFORMAS # esta instância cuida de Binance, Tastytrade e Toro
+        value: BN,TT,TORO
+      - key: BOT_PRIMARIO # secundária: NÃO roda o trabalho global
+        value: "false"
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON # o MESMO JSON do bot-br
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BN_API_KEY # fallback da Binance
+        sync: false
+      - key: BN_API_SECRET
+        sync: false
+      - key: TT_CLIENT_SECRET # fallback OAuth2 da Tastytrade
+        sync: false
+      - key: TT_REFRESH_TOKEN
+        sync: false
+      - key: BRAPI_TOKEN # fallback dos dados da B3 (Toro assistida)
+        sync: false

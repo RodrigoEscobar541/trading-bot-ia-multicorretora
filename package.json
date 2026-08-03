@@ -1,0 +1,22 @@
+{
+  "name": "ia-investidora",
+  "version": "2.1.0",
+  "description": "Plataforma autônoma de análise e execução multi-ativo e multi-corretora (Mercado Bitcoin, Binance, Tastytrade, Toro) com decisão por IA (Gemini) validada por um Motor de Regras determinístico. Especificação completa em CLAUDE.md e regras.md.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22.4"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/scheduler.js",
+    "test": "node --test",
+    "test:rules": "firebase emulators:exec --only firestore --project regras-teste \"node --test tests/rules/firestoreRules.test.js\""
+  },
+  "dependencies": {
+    "firebase-admin": "^14.1.0"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1"
+  }
+}

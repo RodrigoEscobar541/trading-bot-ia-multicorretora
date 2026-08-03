@@ -1,0 +1,51 @@
+# Deploy automático da dashboard (Firebase Hosting) e das regras/índices do
+# Firestore.
+#
+# Pré-requisitos (uma única vez):
+#   1. secret FIREBASE_SERVICE_ACCOUNT (repo → Settings → Secrets and variables
+#      → Actions → New repository secret) com o CONTEÚDO do JSON da service
+#      account do Firebase;
+#   2. variable FIREBASE_PROJECT_ID (mesma tela, aba "Variables") com o id do
+#      projeto Firebase.
+# Se o deploy falhar por permissão, dê o papel "Firebase Admin" à service
+# account em console.cloud.google.com → IAM.
+#
+# NOTA DESTA CÓPIA PÚBLICA: o gatilho é MANUAL (workflow_dispatch). No projeto
+# original ele roda a cada push na main que toque a dashboard, as rules, os
+# índices ou o firebase.json — aqui isso só falharia, porque um fork não tem o
+# secret nem o projeto. Para reativar, descomente o bloco `push` abaixo.
+
+name: Deploy Firebase (Hosting + Firestore)
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'dashboard/**'
+  #     - 'firestore.rules'
+  #     - 'firestore.indexes.json'
+  #     - 'firebase.json'
+  #     - '.firebaserc'
+  #     - '.github/workflows/firebase-deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Gravar credencial da service account
+        run: |
+          cat > "$RUNNER_TEMP/service-account.json" <<'EOF'
+          ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          EOF
+
+      - name: Deploy (hosting + regras + índices)
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/service-account.json
+        run: npx firebase-tools@latest deploy --only hosting,firestore --project "${{ vars.FIREBASE_PROJECT_ID }}" --non-interactive --force

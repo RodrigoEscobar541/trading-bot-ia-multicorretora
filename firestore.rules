@@ -1,0 +1,68 @@
+rules_version = '2';
+
+// Regras de segurança (CLAUDE.md §7.3, regras.md §10).
+//
+// - NENHUM acesso público e NENHUM outro usuário: tudo exige autenticação E o
+//   UID específico do dono do painel.
+// - O bot usa o Admin SDK (service account), que NÃO passa por estas regras —
+//   ele continua lendo e escrevendo tudo, inclusive os segredos.
+//
+// SEGREDOS SÃO SÓ-ESCRITA PELO NAVEGADOR (2026-07-25). Antes, a dashboard
+// baixava `dados/api` inteiro e mascarava na tela com `slice(-4)` — o
+// mascaramento era cosmético: token do MB, secret da Tastytrade, chaves da
+// Binance, token do brapi, chave do Gemini e token do Telegram trafegavam em
+// texto puro até o navegador. Agora o cliente GRAVA uma chave nova mas nunca
+// consegue puxar uma de volta; para mostrar "configurada (…1234)" ele lê o doc
+// de METADADOS que o BOT publica (`dados/api_meta`), onde só existem os quatro
+// últimos caracteres.
+//
+// ATENÇÃO AO MEXER AQUI: regras são avaliadas em OR — se QUALQUER match
+// conceder acesso, o acesso é concedido. Não existe "deny" que sobreponha um
+// allow mais genérico. Por isso não há `match /{document=**}`: cada caminho é
+// enumerado, e a exclusão dos segredos é feita comparando o SEGMENTO do
+// caminho dentro da própria condição de leitura.
+//
+// Testes: `npm run test:rules` (emulador do Firestore; exige Java).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // O UID abaixo é um PLACEHOLDER nesta cópia pública. Substitua pelo UID da
+    // sua conta (console do Firebase → Authentication → coluna "Identificador
+    // do usuário") em TRÊS lugares, que precisam concordar: aqui, em
+    // `dashboard/public/app.js` (UID_AUTORIZADO) e em
+    // `tests/rules/firestoreRules.test.js` (UID_DONO).
+    function ehDono() {
+      return request.auth != null
+        && request.auth.uid == 'COLE_AQUI_O_UID_DO_DONO';
+    }
+
+    // Documentos globais. `telegram_token` guarda o token do bot de avisos:
+    // gravável pela dashboard, nunca legível por ela.
+    match /global/{doc} {
+      allow write: if ehDono();
+      allow read: if ehDono() && doc != 'telegram_token';
+    }
+
+    // Config da plataforma (nome, moeda, modelos de IA, pregão...).
+    match /plataformas/{plataforma} {
+      allow read, write: if ehDono();
+    }
+
+    // Docs da plataforma. `api` guarda as credenciais das corretoras e da IA:
+    // gravável pela dashboard, nunca legível por ela. `api_meta` é o espelho
+    // sem segredo (só os 4 últimos caracteres), publicado pelo BOT.
+    match /plataformas/{plataforma}/dados/{doc} {
+      allow write: if ehDono();
+      allow read: if ehDono() && doc != 'api';
+    }
+
+    // Ativos e tudo que pendura neles (dados/*, historico, operacoes,
+    // posicoes, operacoes_manuais) — nada aqui é segredo.
+    match /plataformas/{plataforma}/ativos/{ativo} {
+      allow read, write: if ehDono();
+    }
+    match /plataformas/{plataforma}/ativos/{ativo}/{resto=**} {
+      allow read, write: if ehDono();
+    }
+  }
+}
