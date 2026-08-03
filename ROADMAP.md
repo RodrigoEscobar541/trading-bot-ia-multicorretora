@@ -1225,8 +1225,8 @@ rodar o reset, registradas para não se perderem:
   medição morre da mesma causa que a primeira.
 - **O backup do reset não tem restauração.** O JSON é gravado e nada o devolve.
   Tudo bem se o papel dele é consulta; o risco é presumir rollback que não existe.
-- TORO/SPCX34 está DESLIGADO com uma posição real aberta: nenhum ciclo roda, logo
-  o stop dela não é conferido.
+- Um ativo da TORO está DESLIGADO com uma posição real aberta: nenhum ciclo roda,
+  logo o stop dela não é conferido.
 
 ## ✅ V8.6 — O RECOMEÇO: ensaio do modo vendas e reset executado (2026-07-27)
 
@@ -1492,8 +1492,9 @@ posição sairia no lucro.
 - O supervisor roda em 01/08 e vai reescrever o prompt — por decisão consciente
   do dono (V8.6). A partir dali a amostra tem duas metades; separá-las depois se
   faz pelo `versao_supervisao` gravado em cada análise.
-- TORO/SPCX34 continua DESLIGADO com uma posição real aberta: nenhum ciclo roda,
-  logo o stop dela não é conferido. Pendência antiga, não afeta a medição.
+- Aquele ativo da TORO continua DESLIGADO com uma posição real aberta: nenhum
+  ciclo roda, logo o stop dela não é conferido. Pendência antiga, não afeta a
+  medição.
 
 **Quando a janela fechar (12/08):** ler os dois relatórios, e só então decidir
 sobre a V6.7 (alvo mínimo / trava de realização) e a saída como decisão de 1ª
