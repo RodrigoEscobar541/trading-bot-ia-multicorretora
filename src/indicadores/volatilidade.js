@@ -1,29 +1,29 @@
-﻿// volatilidade.js â€” medidas de volatilidade do perÃ­odo.
+// volatilidade.js — medidas de volatilidade do período.
 //
-// MÃ³dulo puro. Duas medidas complementares, ambas em percentual:
+// Módulo puro. Duas medidas complementares, ambas em percentual:
 //
-//   1. volatilidadeRange â€” amplitude do perÃ­odo: (mÃ¡xima - mÃ­nima) / mÃ­nima.
-//      Usa a mÃ¡xima/mÃ­nima de 24h jÃ¡ fornecidas pelo ticker do MB, sem chamadas
-//      extras. Ã‰ a medida usada no campo `volatilidade_24h` do JSON da anÃ¡lise
-//      (CLAUDE.md Â§6.1): intuitiva para a IA ("quanto o preÃ§o oscilou no dia").
+//   1. volatilidadeRange — amplitude do período: (máxima - mínima) / mínima.
+//      Usa a máxima/mínima de 24h já fornecidas pelo ticker do MB, sem chamadas
+//      extras. É a medida usada no campo `volatilidade_24h` do JSON da análise
+//      (CLAUDE.md §6.1): intuitiva para a IA ("quanto o preço oscilou no dia").
 //
-//   2. volatilidadeRetornos â€” desvio padrÃ£o amostral dos retornos percentuais
-//      entre fechamentos consecutivos. Medida estatÃ­stica clÃ¡ssica, disponÃ­vel
+//   2. volatilidadeRetornos — desvio padrão amostral dos retornos percentuais
+//      entre fechamentos consecutivos. Medida estatística clássica, disponível
 //      como alternativa/refinamento futuro.
 //
-// Dados insuficientes/invÃ¡lidos lanÃ§am RangeError; quem chama (cicloAtivo.js)
-// captura, loga e pula a iteraÃ§Ã£o sem derrubar o loop (CLAUDE.md Â§3.1).
+// Dados insuficientes/inválidos lançam RangeError; quem chama (cicloAtivo.js)
+// captura, loga e pula a iteração sem derrubar o loop (CLAUDE.md §3.1).
 
-/** Amplitude percentual do perÃ­odo: (mÃ¡xima - mÃ­nima) / mÃ­nima Ã— 100. */
+/** Amplitude percentual do período: (máxima - mínima) / mínima × 100. */
 export function volatilidadeRange(maxima, minima) {
   if (!Number.isFinite(maxima) || !Number.isFinite(minima) || minima <= 0 || maxima < minima) {
-    throw new RangeError(`volatilidadeRange: mÃ¡xima/mÃ­nima invÃ¡lidas (${maxima}, ${minima})`);
+    throw new RangeError(`volatilidadeRange: máxima/mínima inválidas (${maxima}, ${minima})`);
   }
   return ((maxima - minima) / minima) * 100;
 }
 
 /**
- * Desvio padrÃ£o amostral (n-1) dos retornos percentuais entre fechamentos
+ * Desvio padrão amostral (n-1) dos retornos percentuais entre fechamentos
  * consecutivos, em %. Exige pelo menos 3 fechamentos (2 retornos).
  */
 export function volatilidadeRetornos(fechamentos) {
@@ -33,7 +33,7 @@ export function volatilidadeRetornos(fechamentos) {
     );
   }
   if (!fechamentos.every((v) => Number.isFinite(v) && v > 0)) {
-    throw new RangeError('volatilidadeRetornos: sÃ©rie contÃ©m valor nÃ£o numÃ©rico ou nÃ£o positivo');
+    throw new RangeError('volatilidadeRetornos: série contém valor não numérico ou não positivo');
   }
 
   const retornos = [];

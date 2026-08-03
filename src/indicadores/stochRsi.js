@@ -1,24 +1,24 @@
-﻿// stochRsi.js â€” Stochastic RSI (%K suavizado), escala 0 a 1.
+// stochRsi.js — Stochastic RSI (%K suavizado), escala 0 a 1.
 //
-// Origem: conhecimento-mercado.md (histórico git) Â§7.2 â€” configuraÃ§Ã£o dos vÃ­deos de estratÃ©gia:
-// perÃ­odos 9 (RSI e janela estocÃ¡stica), suavizaÃ§Ã£o 5, bandas 0,05 (sobrevenda)
-// e 0,95 (sobrecompra). Mais sensÃ­vel que o RSI puro para extremos de curto prazo.
+// Origem: conhecimento-mercado.md (histórico git) §7.2 — configuração dos vídeos de estratégia:
+// períodos 9 (RSI e janela estocástica), suavização 5, bandas 0,05 (sobrevenda)
+// e 0,95 (sobrecompra). Mais sensível que o RSI puro para extremos de curto prazo.
 //
-// MÃ©todo:
-//   1. SÃ©rie do RSI de Wilder (rsi.js).
-//   2. EstocÃ¡stico do RSI: (RSI âˆ’ mÃ­n(janela)) / (mÃ¡x(janela) âˆ’ mÃ­n(janela)).
-//      Janela sem amplitude (RSI parado) â†’ 0,5 (neutro).
-//   3. %K = mÃ©dia simples (suavizaÃ§Ã£o) dos Ãºltimos valores do estocÃ¡stico.
+// Método:
+//   1. Série do RSI de Wilder (rsi.js).
+//   2. Estocástico do RSI: (RSI − mín(janela)) / (máx(janela) − mín(janela)).
+//      Janela sem amplitude (RSI parado) → 0,5 (neutro).
+//   3. %K = média simples (suavização) dos últimos valores do estocástico.
 //
-// MÃ³dulo puro; dados insuficientes lanÃ§am RangeError (quem chama pula a
-// iteraÃ§Ã£o â€” CLAUDE.md Â§3.1).
+// Módulo puro; dados insuficientes lançam RangeError (quem chama pula a
+// iteração — CLAUDE.md §3.1).
 
 import { serieRSI } from './rsi.js';
 
 /**
- * %K do StochRSI (0 a 1). Bandas de referÃªncia: > 0,95 sobrecomprado,
+ * %K do StochRSI (0 a 1). Bandas de referência: > 0,95 sobrecomprado,
  * < 0,05 sobrevendido.
- * Exige `periodoRsi + periodoStoch + suavizacao` fechamentos (23 no padrÃ£o).
+ * Exige `periodoRsi + periodoStoch + suavizacao` fechamentos (23 no padrão).
  */
 export function calcularStochRSI(
   fechamentos,
@@ -34,7 +34,7 @@ export function calcularStochRSI(
 
   const rsis = serieRSI(fechamentos, periodoRsi).filter((v) => v !== null);
 
-  // SÃ³ precisamos dos Ãºltimos `suavizacao` valores do estocÃ¡stico.
+  // Só precisamos dos últimos `suavizacao` valores do estocástico.
   const estocasticos = [];
   for (let fim = rsis.length - suavizacao; fim < rsis.length; fim++) {
     const janela = rsis.slice(fim - periodoStoch + 1, fim + 1);

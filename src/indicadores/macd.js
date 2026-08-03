@@ -1,23 +1,23 @@
-﻿// macd.js â€” MACD (Moving Average Convergence/Divergence) clÃ¡ssico.
+// macd.js — MACD (Moving Average Convergence/Divergence) clássico.
 //
-// MÃ³dulo puro: recebe a sÃ©rie de fechamentos (do mais antigo para o mais
-// recente) e devolve o objeto exigido pelo JSON da anÃ¡lise (CLAUDE.md Â§6.1):
+// Módulo puro: recebe a série de fechamentos (do mais antigo para o mais
+// recente) e devolve o objeto exigido pelo JSON da análise (CLAUDE.md §6.1):
 //   { linha_macd, linha_sinal, histograma }
 //
-// MÃ©todo clÃ¡ssico (12/26/9):
+// Método clássico (12/26/9):
 //   linha MACD  = EMA(12) - EMA(26) dos fechamentos
-//   linha sinal = EMA(9) da prÃ³pria linha MACD
+//   linha sinal = EMA(9) da própria linha MACD
 //   histograma  = linha MACD - linha sinal
 //
-// Dados insuficientes/invÃ¡lidos lanÃ§am RangeError; quem chama (cicloAtivo.js)
-// captura, loga e pula a iteraÃ§Ã£o sem derrubar o loop (CLAUDE.md Â§3.1).
+// Dados insuficientes/inválidos lançam RangeError; quem chama (cicloAtivo.js)
+// captura, loga e pula a iteração sem derrubar o loop (CLAUDE.md §3.1).
 
 import { serieEMA } from './mediasMoveis.js';
 
 /**
- * MACD sobre a sÃ©rie de fechamentos.
- * Exige pelo menos `periodoLento + periodoSinal` fechamentos (34 no padrÃ£o):
- * a linha MACD sÃ³ existe a partir do Ã­ndice `periodoLento - 1`, e a linha de
+ * MACD sobre a série de fechamentos.
+ * Exige pelo menos `periodoLento + periodoSinal` fechamentos (34 no padrão):
+ * a linha MACD só existe a partir do índice `periodoLento - 1`, e a linha de
  * sinal precisa de `periodoSinal` valores dela.
  */
 export function calcularMACD(
@@ -32,13 +32,13 @@ export function calcularMACD(
     );
   }
   if (periodoRapido >= periodoLento) {
-    throw new RangeError('MACD: perÃ­odo rÃ¡pido deve ser menor que o lento');
+    throw new RangeError('MACD: período rápido deve ser menor que o lento');
   }
 
   const emaRapida = serieEMA(fechamentos, periodoRapido);
   const emaLenta = serieEMA(fechamentos, periodoLento);
 
-  // Linha MACD vÃ¡lida apenas onde a EMA lenta jÃ¡ existe.
+  // Linha MACD válida apenas onde a EMA lenta já existe.
   const linhaMacd = [];
   for (let i = periodoLento - 1; i < fechamentos.length; i++) {
     linhaMacd.push(emaRapida[i] - emaLenta[i]);

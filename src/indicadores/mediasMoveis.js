@@ -1,30 +1,30 @@
-﻿// mediasMoveis.js â€” mÃ©dias mÃ³veis simples (SMA) e exponenciais (EMA).
+// mediasMoveis.js — médias móveis simples (SMA) e exponenciais (EMA).
 //
-// MÃ³dulo puro: recebe sÃ©ries numÃ©ricas (fechamentos, do mais antigo para o
-// mais recente, como devolvido por mbPublico.obterCandles) e devolve nÃºmeros.
-// Nenhum acesso a rede ou estado â€” todo cÃ¡lculo Ã© do cÃ³digo, nunca da IA
-// (regras.md Â§1.1).
+// Módulo puro: recebe séries numéricas (fechamentos, do mais antigo para o
+// mais recente, como devolvido por mbPublico.obterCandles) e devolve números.
+// Nenhum acesso a rede ou estado — todo cálculo é do código, nunca da IA
+// (regras.md §1.1).
 //
-// DecisÃ£o de projeto: o JSON da anÃ¡lise (CLAUDE.md Â§6.1) pede "medias_moveis"
-// mm9/mm21/mm50 sem especificar o tipo; adotamos a leitura literal de "mÃ©dia
-// mÃ³vel" = SMA. A EMA Ã© exportada porque o MACD depende dela (macd.js) e para
-// permitir trocar o tipo futuramente sem reescrever este mÃ³dulo.
+// Decisão de projeto: o JSON da análise (CLAUDE.md §6.1) pede "medias_moveis"
+// mm9/mm21/mm50 sem especificar o tipo; adotamos a leitura literal de "média
+// móvel" = SMA. A EMA é exportada porque o MACD depende dela (macd.js) e para
+// permitir trocar o tipo futuramente sem reescrever este módulo.
 //
-// Dados insuficientes/invÃ¡lidos lanÃ§am RangeError; quem chama (cicloAtivo.js)
-// captura, loga e pula a iteraÃ§Ã£o sem derrubar o loop (CLAUDE.md Â§3.1).
+// Dados insuficientes/inválidos lançam RangeError; quem chama (cicloAtivo.js)
+// captura, loga e pula a iteração sem derrubar o loop (CLAUDE.md §3.1).
 
 function validarSerie(valores, minimo, origem) {
   if (!Array.isArray(valores) || valores.length < minimo) {
     throw new RangeError(
-      `${origem}: sÃ©rie precisa de pelo menos ${minimo} valores (recebeu ${valores?.length ?? 0})`,
+      `${origem}: série precisa de pelo menos ${minimo} valores (recebeu ${valores?.length ?? 0})`,
     );
   }
   if (!valores.every((v) => Number.isFinite(v))) {
-    throw new RangeError(`${origem}: sÃ©rie contÃ©m valor nÃ£o numÃ©rico`);
+    throw new RangeError(`${origem}: série contém valor não numérico`);
   }
 }
 
-/** MÃ©dia mÃ³vel simples dos Ãºltimos `periodo` valores da sÃ©rie. */
+/** Média móvel simples dos últimos `periodo` valores da série. */
 export function calcularSMA(valores, periodo) {
   validarSerie(valores, periodo, `SMA(${periodo})`);
   const janela = valores.slice(-periodo);
@@ -32,9 +32,9 @@ export function calcularSMA(valores, periodo) {
 }
 
 /**
- * SÃ©rie completa da EMA, alinhada Ã  sÃ©rie de entrada: posiÃ§Ãµes anteriores a
- * `periodo - 1` ficam `null` (EMA ainda indefinida). A semente Ã© a SMA dos
- * primeiros `periodo` valores; multiplicador padrÃ£o k = 2 / (periodo + 1).
+ * Série completa da EMA, alinhada à série de entrada: posições anteriores a
+ * `periodo - 1` ficam `null` (EMA ainda indefinida). A semente é a SMA dos
+ * primeiros `periodo` valores; multiplicador padrão k = 2 / (periodo + 1).
  */
 export function serieEMA(valores, periodo) {
   validarSerie(valores, periodo, `EMA(${periodo})`);
@@ -51,8 +51,8 @@ export function serieEMA(valores, periodo) {
 }
 
 /**
- * Calcula as trÃªs mÃ©dias mÃ³veis do JSON da anÃ¡lise (CLAUDE.md Â§6.1).
- * Exige fechamentos suficientes para o maior perÃ­odo (padrÃ£o 50).
+ * Calcula as três médias móveis do JSON da análise (CLAUDE.md §6.1).
+ * Exige fechamentos suficientes para o maior período (padrão 50).
  */
 export function calcularMediasMoveis(fechamentos, periodos = { mm9: 9, mm21: 21, mm50: 50 }) {
   const resultado = {};
@@ -63,10 +63,10 @@ export function calcularMediasMoveis(fechamentos, periodos = { mm9: 9, mm21: 21,
 }
 
 /**
- * Detecta o estado e o cruzamento recente entre duas SMAs (padrÃ£o 9/21 â€”
- * conhecimento-mercado.md (histórico git) Â§7.1: cruzamento de curto prazo confirma retomada
- * de tendÃªncia). Olha os Ãºltimos `janela` candles em busca de troca de sinal
- * na diferenÃ§a (curta âˆ’ longa).
+ * Detecta o estado e o cruzamento recente entre duas SMAs (padrão 9/21 —
+ * conhecimento-mercado.md (histórico git) §7.1: cruzamento de curto prazo confirma retomada
+ * de tendência). Olha os últimos `janela` candles em busca de troca de sinal
+ * na diferença (curta − longa).
  *
  * Retorna:
  *   { curta_acima_longa: boolean, cruzamento_recente: 'alta' | 'baixa' | null }
@@ -74,7 +74,7 @@ export function calcularMediasMoveis(fechamentos, periodos = { mm9: 9, mm21: 21,
 export function detectarCruzamento(fechamentos, { curta = 9, longa = 21, janela = 3 } = {}) {
   validarSerie(fechamentos, longa + janela, `cruzamento(${curta}/${longa})`);
   if (curta >= longa) {
-    throw new RangeError('detectarCruzamento: perÃ­odo curto deve ser menor que o longo');
+    throw new RangeError('detectarCruzamento: período curto deve ser menor que o longo');
   }
 
   const smaAte = (fim, periodo) => {
@@ -83,7 +83,7 @@ export function detectarCruzamento(fechamentos, { curta = 9, longa = 21, janela 
     return soma / periodo;
   };
 
-  // DiferenÃ§as (curta âˆ’ longa) nos Ãºltimos `janela + 1` candles.
+  // Diferenças (curta − longa) nos últimos `janela + 1` candles.
   const diferencas = [];
   for (let fim = fechamentos.length - 1 - janela; fim < fechamentos.length; fim++) {
     diferencas.push(smaAte(fim, curta) - smaAte(fim, longa));
