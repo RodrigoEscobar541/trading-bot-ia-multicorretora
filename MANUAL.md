@@ -188,7 +188,9 @@ Na tela do ativo, seção **Configurações do ativo**:
 | **Limite de perda diária (%)** | Se o patrimônio da plataforma cair tanto no dia, bloqueia novas compras até o dia virar. 0 desliga. |
 | **Orçamento do ativo (%)** | Teto de quanto do patrimônio da plataforma este ativo pode ocupar. **0 = não compra** (é assim que ativo novo nasce). Abaixo do campo, a dashboard mostra a **soma dos orçamentos de todos os ativos** da plataforma — se passar de 100%, fica **vermelho** (você ainda consegue salvar; é só um aviso para reequilibrar entre os ativos). |
 | **Distância máxima do stop-loss (%)** | Teto de quão LONGE do preço de compra a IA pode colocar o chão da posição (padrão 15%). Se ela pedir um chão mais distante, o robô **aperta** o valor até esse limite. É a trava que impede um stop tão largo que na prática não protege nada (seção 6.5). |
-| **Folga do stop-loss (%)** | O contrário do campo acima, e o mais importante dos dois: distância **MÍNIMA** entre o preço e o chão (padrão 3%). Chão que a IA peça mais perto que isso é recusado ou alargado, e é também a distância em que o robô sobe o chão sozinho. Foi o que resolveu o stop vendendo em prejuízo — leia a **seção 6.5.1** antes de mexer. |
+| **Folga do stop-loss (%)** | O contrário do campo acima, e o mais importante dos dois: distância **MÍNIMA** entre o preço e o chão (padrão 2%). Chão que a IA peça mais perto que isso é recusado ou alargado, e é também a distância em que o robô sobe o chão sozinho. Foi o que resolveu o stop vendendo em prejuízo — leia a **seção 6.5.1** antes de mexer. |
+| **Trava de lucro — gatilho (%)** | Quanto a posição precisa subir acima do ponto de empate para o robô armar a trava que **realiza** o lucro (padrão 1%). **0 desliga a trava** neste ativo. Seção 6.5.2. |
+| **Trava de lucro — devolução (%)** | Quanto do **topo** da posição o robô aceita devolver antes de vender e embolsar (padrão 0,8%). Menor = realiza mais cedo e mais vezes. Seção 6.5.2. |
 | **Ordem mínima (valor/quantidade)** | Pisos operacionais. |
 
 ### Sobre as taxas (importante)
@@ -277,18 +279,37 @@ Pontos importantes para não confundir:
 
 ---
 
-## 6.3 Botão "Travar tudo" (parada de emergência)
+## 6.3 Controles rápidos (os quatro botões de emergência)
 
-Na **Visão geral**, o botão **"⛔ Travar tudo"** para TODA a operação do robô
-na hora — análises E ordens, tanto real quanto simulação. Use se algo parecer
-errado (mercado maluco, notícia grave, comportamento estranho do bot).
+Na **Visão geral**, no fim da página (seção **Ajustes**), existe um cartão com
+os quatro botões que desligam o robô — cada um desliga uma parte diferente.
+Todos ficam juntos de propósito: na hora do aperto você não precisa procurar.
 
-- Pede **confirmação** antes de travar.
-- Enquanto travado, o bot **continua no ar** (aparece 🟢 online), mas **não
-  analisa nem envia nenhuma ordem**. Um banner vermelho mostra que está travado
-  e confirma quando o bot já "viu" a pausa (leva no máximo ~1 minuto).
-- Para retomar, clique em **"▶ Destravar operação"** (também com confirmação).
-- É um botão global: vale para todas as plataformas e ativos de uma vez.
+Todos pedem **confirmação**, todos são **reversíveis pelo mesmo botão**, e em
+todos eles o bot **continua no ar** (aparece 🟢 online). Enquanto um estiver
+ligado, um **banner** no topo da Visão geral lembra você disso.
+
+| Botão | O que para | O que CONTINUA | Demora |
+| :--- | :--- | :--- | :--- |
+| ⛔ **Travar tudo** | tudo: nenhuma análise e nenhuma ordem, real ou simulação | só o heartbeat (o bot fica vivo) | ~1 min |
+| 🧠 **Desligar IA** | a IA: nenhuma análise nova, nenhuma compra, nenhuma venda decidida por ela; a supervisão semanal fica pausada | **o stop-loss e a trava de lucro** — suas posições continuam protegidas | ~1 min |
+| 🔕 **Desligar avisos** | as mensagens no Telegram | tudo o mais: o robô segue analisando e operando | ~5 min |
+| 💰 **Ligar modo vendas** | as compras (o robô passa a liquidar a carteira) | as vendas — ver §6.6 antes de usar | ~1 min |
+
+**Qual usar?**
+
+- Algo muito errado (mercado maluco, notícia grave, robô estranho): **Travar
+  tudo**.
+- Quer só que ele pare de tomar decisões novas, mas sem largar as posições
+  abertas sem proteção: **Desligar IA**. É o botão certo quando você quer
+  "congelar a carteira como está" sem abrir mão do chão que já existe.
+- Está em reunião/viagem e não quer o celular apitando: **Desligar avisos**.
+  Suas escolhas de quais eventos avisar ficam intactas — religar devolve tudo
+  como estava. Este é o mesmo interruptor do card "Avisos no Telegram".
+
+⚠️ **Cuidado com o "Desligar avisos"**: um robô mudo parece um robô sem
+problemas. Você deixa de receber inclusive os avisos de erro (quota da IA
+acabou, corretora fora do ar). Por isso ele tem banner próprio na tela.
 
 ---
 
@@ -314,25 +335,39 @@ de validade a partir da V6.2:
 Isto explica por que você quase nunca vê a decisão "VENDER" na tela — e por que
 **isso é o esperado**, não um defeito.
 
-O robô tem **duas formas de sair** de uma posição:
+O robô tem **três formas de sair** de uma posição. Duas são automáticas e uma é
+decisão da IA:
 
-**1. O chão que sobe (a saída normal).** Quando uma posição está dando lucro, o
-robô mantém um "chão" logo abaixo do preço e vai **subindo esse chão sozinho**,
-a cada 15 minutos. Se o preço virar e cair até o chão, ele vende ali. É assim
-que um acerto continua rendendo sem você devolver o lucro no primeiro susto.
+**1. O stop-loss (o chão largo) — corta o prejuízo.** Fica bem abaixo do preço,
+de propósito, para aguentar o balanço normal do dia. Se o preço cair até ele, a
+posição é vendida — inclusive no prejuízo. É a rede de segurança, não a tesoura.
 
-Por isso, numa posição que está ganhando, a resposta da IA quase sempre é
-*"aguardar e elevar o chão"*. Ela **não** está parada — está protegendo o ganho
-sem fechar a porta para o que ainda pode vir.
+**2. A trava de lucro (o chão estreito) — realiza o ganho.** Assim que a posição
+sobe um pouco acima do ponto de empate, o robô arma um **segundo** chão, bem mais
+perto do preço, logo abaixo do **topo** que aquela posição já alcançou. Se o
+preço devolver essa distância, ele vende e embolsa o lucro.
 
-**2. A venda decidida pela IA (a exceção).** Quando os indicadores mostram que a
-tendência **virou para baixo**, esperar o chão ser tocado custa dinheiro — o
-chão fica alguns por cento abaixo do preço. Nesse caso a IA vende na hora.
+> **A trava nunca vende no prejuízo.** Ela só existe acima do ponto de empate. No
+> pior caso ela realiza um lucro menor do que daria para esperar — nunca uma
+> perda.
 
-> **Na prática:** ver "VENDER" raramente é normal. O que **não** é normal é uma
-> posição devolvendo lucro, com os indicadores virando, e a IA seguindo em
-> "aguardar". Se você vir isso, o lugar de ajustar é o texto em **"Regras gerais
-> da IA" → seção 4.1**, não a configuração do ativo.
+**3. A venda decidida pela IA.** Ela tem duas horas certas:
+
+- **Quando a trava ainda não armou** e o lote já está em lucro. Aí o ganho é
+  pequeno demais para a trava, o stop-loss está lá embaixo e **nenhum automático
+  reage** — se o preço virar, o lucro vira prejuízo. É a faixa mais importante
+  da decisão dela.
+- **Quando a tendência virou de vez** num lote com trava armada: vender agora
+  entrega mais que esperar o preço devolver os 0,8%.
+
+> **Por que isso mudou (V8.11, 05/08).** Até aqui a saída normal era só o chão
+> largo subindo, e ele **nunca alcançava os lotes de verdade**: para começar a
+> travar lucro, o preço precisava subir uns 5% a 6,7%, e o topo mediano das 23
+> posições fechadas foi de **+1,09%**. Resultado: 17 saídas por stop contra 6
+> vendas no lucro. A trava de lucro é a peça que faltava.
+
+Você vê a trava de cada posição na coluna **"Trava de lucro"** da tabela de
+posições abertas. "—" ali significa que ela ainda não armou.
 
 ---
 
@@ -436,18 +471,46 @@ que antes se chamava "Distância do trailing". Você muda ali, ativo por ativo, 
 esse o furo — antes o número dela vencia o seu, e por isso subir a config não
 mudava nada.
 
-> **O preço dessa mudança, para você não se assustar:** vai haver **menos stops,
-> e cada um mais caro**. Com folga de 5%, um stop custa ~5% em vez de ~2%. Em
-> troca, o lote deixa de morrer no zero e ganha espaço para a alta acontecer.
-> Outro efeito: o robô só começa a subir o chão depois que o preço sobe o
-> bastante para a folga caber acima do ponto de empate. Com folga de 5%, isso é
-> **+6,7% no Mercado Bitcoin**, +5,5% na Binance e +5,3% na Tastytrade (a
-> diferença é só o tamanho das taxas). Antes disso, o chão fica onde a IA o pôs.
+> **O preço dessa mudança:** menos stops, e cada um mais caro. Em troca, o lote
+> deixa de morrer no zero e ganha espaço para a alta acontecer.
 
-**Como escolher o número:** olhe quanto o ativo oscila num dia normal e use algo
-entre esse valor e o dobro dele. Cripto oscila 2%–3% ao dia, então 5% é uma folga
-razoável; uma ação mais calma aceita 3%. Se você não souber, deixe como está — o
-importante é não descer abaixo de 3%.
+---
+
+### 6.5.2 A trava de lucro — os dois campos novos (V8.11)
+
+A folga de 5% resolveu o prejuízo e criou outro problema, que só apareceu quando
+comparamos dois números: **para o chão largo começar a travar lucro, o preço
+tinha de subir +6,7% no Mercado Bitcoin** (+5,5% na Binance, +5,3% na
+Tastytrade) — e o topo mediano das 23 posições fechadas foi de **+1,09%**, com o
+maior de todos em +3,07%. Nenhuma chegou perto. O chão subia, o robô "funcionava",
+e nenhum centavo de lucro era travado.
+
+**A causa:** um número só fazendo dois trabalhos opostos. O chão que protege do
+prejuízo precisa ser LARGO. O que realiza lucro precisa ser ESTREITO. Agora são
+dois números separados, e você ajusta cada um por ativo:
+
+| Campo | Padrão | O que faz |
+| :--- | :--- | :--- |
+| **Folga do stop-loss (%)** | 2% | distância do chão largo, o que corta prejuízo |
+| **Trava de lucro — gatilho (%)** | 1% | quanto a posição precisa subir acima do ponto de empate para a trava armar |
+| **Trava de lucro — devolução (%)** | 0,8% | quanto do TOPO o robô aceita devolver antes de vender |
+
+**Como ler isso na prática.** Você comprou a 100 e o ponto de empate é 101,4
+(taxas das duas pernas). A trava arma quando o preço passa de ~102,4 (empate +
+1%). Se o preço chegar a 110, a trava fica em 109,12 (110 − 0,8%). Caiu para
+109,12 → vende, com lucro. Subiu para 115 → a trava sobe para 114,08. **Ela só
+sobe.**
+
+**Como ajustar:**
+
+- Quer **realizar mais cedo e mais vezes**? Diminua a devolução (0,5%).
+- Quer **deixar correr mais**? Aumente a devolução (1,5% ou 2%).
+- Quer **desligar a trava** num ativo? Ponha **0** em qualquer um dos dois
+  campos — ele volta a se comportar como antes.
+
+> **O que esperar:** mais vendas, cada uma com lucro menor. É de propósito. O
+> quadro anterior era 17 saídas por stop (todas no vermelho) contra 6 vendas no
+> lucro.
 
 ---
 

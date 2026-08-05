@@ -190,6 +190,16 @@ export async function abrirPosicao({
     // de avanço, que é a informação certa, não a ausência dela.
     preco_maximo: arredondarValor(preco_compra),
     preco_maximo_em: horario,
+    // TRAVA DE LUCRO (V8.11, §10.8): o SEGUNDO chão, estreito, que só existe
+    // acima do breakeven do lote. Nasce null e é armado pelo Motor quando o
+    // pico passa do gatilho. Separado do `stop_loss` de propósito: aquele é
+    // largo (a folga da §10.7) porque protege do prejuízo e precisa aguentar o
+    // ruído do dia; este é estreito porque realiza lucro, e um chão largo
+    // demais para isso simplesmente nunca dispara — foi o que os 23 lotes
+    // fechados até 2026-08-05 mostraram (topo mediano de +1,09% contra os
+    // +5,3% que a folga exigia).
+    trava_lucro: null,
+    trava_lucro_em: null,
     fechamento: null,
     preco_venda: null,
     taxa_venda: null,
@@ -241,6 +251,21 @@ export async function registrarPico(plataforma, ativo, id, { preco, horario = nu
   });
 }
 
+/**
+ * Arma (ou eleva) a TRAVA DE LUCRO de uma posição aberta (V8.11, §10.8).
+ *
+ * Só persiste: quem decide se a trava subiu é o Motor
+ * (`regrasEngine.avaliarTravaLucro`), pelo mesmo motivo do stop-loss e do pico
+ * — a regra fica num módulo puro e testável, e a persistência não julga nada.
+ */
+export async function definirTravaLucro(plataforma, ativo, id, { trava_lucro, horario = null }) {
+  await atualizarPosicaoAtivo(plataforma, ativo, id, {
+    trava_lucro: arredondarValor(trava_lucro),
+    trava_lucro_em: horario ?? timestampISO(),
+    atualizada_em: timestampISO(),
+  });
+}
+
 /** Marca um status pontual (ex.: VENDA durante a execução real). */
 export async function marcarStatus(plataforma, ativo, id, status) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, { status, atualizada_em: timestampISO() });
@@ -282,6 +307,20 @@ export async function definirStopLoss(plataforma, ativo, id, { stop_loss, motivo
 export async function marcarStopRecomendado(plataforma, ativo, id, recomendadoEm) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     stop_recomendado_em: recomendadoEm,
+    atualizada_em: timestampISO(),
+  });
+}
+
+/**
+ * Mesmo papel do anterior, para a TRAVA DE LUCRO (V8.11): em plataforma
+ * assistida o bot só RECOMENDA, e sem esta marca ele repetiria a mesma
+ * recomendação de realizar lucro a cada ciclo enquanto o dono não agisse.
+ * Campo separado do stop de propósito — são dois episódios independentes, e o
+ * mesmo lote pode estar em um sem estar no outro.
+ */
+export async function marcarTravaRecomendada(plataforma, ativo, id, recomendadaEm) {
+  await atualizarPosicaoAtivo(plataforma, ativo, id, {
+    trava_recomendada_em: recomendadaEm,
     atualizada_em: timestampISO(),
   });
 }

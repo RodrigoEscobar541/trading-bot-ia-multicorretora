@@ -18,6 +18,7 @@
   --marca-venda: #2a78d6;      /* slot 1 (azul) — validado; sempre com a forma ▼ */
   --marca-venda-stop: #c0392b; /* venda forçada pelo stop-loss do Motor; forma ▼ */
   --marca-venda-liquidacao: #8a5a00; /* venda no modo vendas (V8); forma ▼ */
+  --marca-venda-trava: #00807a; /* venda pela trava de lucro (V8.11); forma ▼ */
   --positivo: #006300;         /* delta bom (texto) */
   --negativo: #d03b3b;         /* status critical */
   --atencao: #ec835a;          /* status serious (modo real) */
@@ -40,6 +41,7 @@
     --marca-venda: #3987e5;
     --marca-venda-stop: #e05a4a;
     --marca-venda-liquidacao: #d99a2b;
+    --marca-venda-trava: #2bbdb4;
     --positivo: #0ca30c;
     --negativo: #d03b3b;
     --atencao: #ec835a;
@@ -260,6 +262,8 @@ h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
 .chave-venda-stop { color: var(--marca-venda-stop); }
 .venda-stop { color: var(--marca-venda-stop); font-weight: 600; }
 .venda-liquidacao { color: var(--marca-venda-liquidacao); font-weight: 600; }
+.venda-trava { color: var(--marca-venda-trava); font-weight: 600; }
+.chave-venda-trava { color: var(--marca-venda-trava); }
 
 .dados-tabela { margin-top: 8px; font-size: 13px; }
 .dados-tabela summary { cursor: pointer; color: var(--tinta-2); }
@@ -380,6 +384,10 @@ legend { font-size: 13px; font-weight: 600; color: var(--tinta); padding: 0 6px;
   padding: 9px 18px;
 }
 .botao-perigo:hover { filter: brightness(1.1); }
+/* Botão de corte ainda sem o que cortar (avisos não configurados): continua
+   visível para o dono saber que ele existe, mas não clicável. */
+.botao-primario:disabled,
+.botao-perigo:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .rodape { margin-top: 24px; text-align: center; }
 
 /* ------------------------ parada de emergência + seletor de modo (V6.2) */
@@ -393,7 +401,35 @@ legend { font-size: 13px; font-weight: 600; color: var(--tinta); padding: 0 6px;
   background: #8a5a00; color: #fff; font-weight: 600;
   padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
 }
+/* Kill-switch da IA (V8.10). Cor própria: o robô sem IA continua vivo e
+   protegendo posições — não é uma parada, e pintá-lo de vermelho faria os dois
+   estados se confundirem no canto do olho. */
+.banner-ia {
+  background: #4c3d8f; color: #fff; font-weight: 600;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+}
+/* Avisos mudos: o mais discreto dos quatro, porque nada da operação muda —
+   mas ainda assim visível, senão o dono esquece que desligou e confia no
+   silêncio como se fosse "está tudo bem". */
+.banner-avisos {
+  background: var(--plano); color: var(--tinta);
+  border: 1px solid var(--eixo); border-left: 4px solid var(--tinta-mutada);
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem;
+}
 .cartao-controle { margin-bottom: 16px; }
+/* Os quatro cortes no mesmo cartão: duas colunas no desktop, uma no celular.
+   O item do modo vendas ocupa a linha inteira — ele tem campos além do botão. */
+.grade-controles {
+  display: grid; gap: 14px; margin-top: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.controle-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  border: 1px solid var(--eixo); border-radius: 10px; padding: 12px 14px;
+}
+.controle-item p { margin: 0; }
+.controle-item-largo { grid-column: 1 / -1; }
+.controle-item .renda-cdi-config { margin-top: 4px; }
 .controle-linha {
   display: flex; align-items: center; justify-content: space-between;
   gap: 14px; flex-wrap: wrap;

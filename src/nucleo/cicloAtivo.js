@@ -20,8 +20,10 @@ import {
   breakevenPosicao,
   listarPosicoesAbertas,
   definirStopLoss,
+  definirTravaLucro,
   registrarPico,
   marcarStopRecomendado,
+  marcarTravaRecomendada,
   STATUS_VENDAVEIS,
 } from '../posicoes/posicoes.js';
 import {
@@ -36,6 +38,9 @@ import {
   avaliarStopLoss,
   avaliarTrailingStop,
   avaliarPicoPosicoes,
+  avaliarTravaLucro,
+  posicoesComTravaFurada,
+  travaLucroConfig,
   validarAjustesStopLoss,
   folgaMinimaPercentual,
 } from '../regras/regrasEngine.js';
@@ -83,6 +88,9 @@ const diasAtras = (dias) => new Date(Date.now() - dias * 24 * 60 * 60 * 1000).to
  *   modoVendas — estado da liquidação (V8), resolvido pelo orquestrador com
  *                `estadoModoVendas(controle)`; null = modo desligado, e nesse
  *                caso o ciclo se comporta exatamente como antes da V8
+ *   iaDesligada — kill-switch da IA (`global/controle.ia_desligada`): o ciclo
+ *                roda inteiro MENOS a chamada à IA. As saídas automáticas do
+ *                Motor (stop-loss, trava de lucro) continuam valendo
  *   decidirFn  — injetável para testes (padrão: iaClient.decidir)
  */
 export async function executarCicloAtivo({
@@ -93,6 +101,7 @@ export async function executarCicloAtivo({
   conector,
   estado: estadoConhecido = null,
   modoVendas = null,
+  iaDesligada = false,
   // Pula o filtro de variação NESTA rodada. Hoje quem pede é a chegada de uma
   // notícia do jogo (fase 3 da Steam): sai a atualização, o preço ainda não se
   // moveu, a variação é 0,0% — e é exatamente o minuto em que a IA teria algo a
@@ -128,12 +137,14 @@ export async function executarCicloAtivo({
   const estado = estadoConhecido ?? (await obterEstadoAtivo(pid, aid));
   const agora = timestampISO();
 
-  // ------------------------------------------------------------- STOP-LOSS (V6.6)
-  // Roda ANTES do filtro de variação, em TODO ciclo: um chão que só fosse
-  // conferido quando a IA é chamada não seria chão nenhum — uma queda pode
-  // acontecer sem que a variação acumulada desde a última ANÁLISE passe do
-  // mínimo. É determinístico e não consulta a IA.
-  const stop = await verificarStopLoss({
+  // ---------------------------------------------- SAÍDAS AUTOMÁTICAS (V6.6/V8.11)
+  // Os dois chãos do Motor: o stop-loss LARGO, que protege do prejuízo, e a
+  // trava de lucro ESTREITA, que realiza o ganho. Rodam ANTES do filtro de
+  // variação, em TODO ciclo: um chão que só fosse conferido quando a IA é
+  // chamada não seria chão nenhum — uma queda pode acontecer sem que a variação
+  // acumulada desde a última ANÁLISE passe do mínimo. São determinísticos e não
+  // consultam a IA.
+  const stop = await verificarSaidasAutomaticas({
     pid,
     aid,
     ativo,
@@ -146,6 +157,33 @@ export async function executarCicloAtivo({
     moeda,
   });
   if (stop) return stop;
+
+  // ------------------------------------------------ IA DESLIGADA (kill-switch)
+  // Chave da IA desligada pela dashboard (`global/controle.ia_desligada`). Vem
+  // DEPOIS das saídas automáticas de propósito: o que o dono desliga aqui é a
+  // decisão, não a proteção. O stop-loss e a trava de lucro acima são do MOTOR,
+  // são determinísticos e não consomem quota — continuam valendo, senão o botão
+  // deixaria as posições sem chão e viraria uma armadilha em vez de segurança.
+  // Para congelar TUDO existe a parada de emergência (§10 / V6.2).
+  //
+  // O baseline (`preco_ultima_analise`) NÃO avança: quando a IA voltar, ela
+  // enxerga a variação acumulada desde a última análise DE VERDADE, não desde o
+  // último tick engolido pelo desligamento.
+  if (iaDesligada) {
+    await salvarEstadoAtivo(pid, aid, { horario_ultima_verificacao: agora });
+    await registrarAnaliseAtivo(pid, aid, {
+      tipo: 'verificacao',
+      chamou_ia: false,
+      preco_atual: precoAtual,
+      preco_ultima_analise: estado.preco_ultima_analise ?? null,
+      motivo: 'IA desligada pela dashboard — nenhuma análise nova (stop-loss e trava de lucro seguem ativos)',
+    });
+    return {
+      tipo: 'ia_desligada',
+      preco_atual: precoAtual,
+      estado: { ...estado, horario_ultima_verificacao: agora },
+    };
+  }
 
   // ---------------------------------------------- filtro de variação (por ativo)
   const base = estado.preco_ultima_analise;
@@ -263,6 +301,14 @@ export async function executarCicloAtivo({
       stop_loss_trailing_percentual: Number.isFinite(p.stop_loss_trailing_percentual)
         ? p.stop_loss_trailing_percentual
         : null,
+      // TRAVA DE LUCRO (V8.11, §10.8) e o PICO que a alimenta. Vão ao JSON para
+      // a IA parar de tentar apertar o chão em lote vencedor: quem realiza esse
+      // lucro agora é o Motor, e o pedido dela seria recusado pela folga (§10.7).
+      // Sabendo onde a trava está, a decisão dela vira "AGUARDAR e deixar a
+      // trava trabalhar" ou "VENDER agora porque a tese virou" — que são as
+      // duas saídas reais do sistema (§10.2.1).
+      trava_lucro: Number.isFinite(p.trava_lucro) ? r2(p.trava_lucro) : null,
+      preco_maximo: Number.isFinite(p.preco_maximo) ? r2(p.preco_maximo) : null,
       aberta_em: p.abertura,
     }));
 
@@ -323,6 +369,12 @@ export async function executarCicloAtivo({
       // (em ajuste de posição que já tem chão) — a IA precisa do número para
       // dimensionar a posição, que é amarrada à distância do chão.
       folga_minima_stop_percentual: folgaMinimaPercentual(null, config),
+      // Os dois números da TRAVA DE LUCRO (V8.11, §10.8). Vão ao JSON porque
+      // mudam o que "esperar mais um pouco" significa: com devolução de 0,8%, a
+      // IA sabe que um lote no pico será realizado se recuar isso, e que
+      // AGUARDAR num vencedor já é uma decisão de saída, não de inércia.
+      trava_lucro_gatilho_percentual: travaLucroConfig(config).gatilho,
+      trava_lucro_devolucao_percentual: travaLucroConfig(config).devolucao,
     },
     historico_resumido: {
       ultima_decisao: estado.ultima_decisao_ia?.acao ?? null,
@@ -604,7 +656,7 @@ export async function executarCicloAtivo({
  * definição. Sem essa pré-checagem barata, o tick de todo ativo custaria uma
  * volta completa na corretora (V5_2_Plan.MD §7: nada novo no caminho quente).
  */
-async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, assistida, agora, estado, moeda }) {
+async function verificarSaidasAutomaticas({ pid, aid, ativo, conector, precoAtual, modo, assistida, agora, estado, moeda }) {
   const config = ativo.config;
 
   // --- pré-checagem barata: alguém furou o chão? ------------------------------
@@ -649,11 +701,11 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
     }
   }
 
-  // --- trailing automático do Motor (§10.3) -----------------------------------
-  // Nada furou o chão: é a hora de SUBI-LO. Roda em TODO ciclo (a IA só é
-  // chamada quando o filtro de variação deixa) e reaproveita a lista de
+  // --- trailing automático do Motor (§10.3) + trava de lucro (§10.8) ----------
+  // Nada furou o chão: é a hora de SUBIR os dois. Rodam em TODO ciclo (a IA só
+  // é chamada quando o filtro de variação deixa) e reaproveitam a lista de
   // posições já lida acima — nenhuma leitura nova no caminho quente (V5.2).
-  // Só age em posição com LUCRO, e só escreve quando o chão de fato sobe.
+  let travaFurada = [];
   if (furadas.length === 0) {
     const { aplicar } = avaliarTrailingStop({ posicoes_abertas: posicoes, preco_atual: precoAtual, config });
     for (const t of aplicar) {
@@ -667,13 +719,61 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
         log.aviso(`[${pid}/${aid}] falha ao aplicar o trailing do Motor em ${t.id}`, e);
       }
     }
-    return null;
+
+    // TRAVA DE LUCRO (V8.11): o segundo chão, o estreito, que só existe acima do
+    // breakeven. É ele que realiza o lucro do movimento típico — o trailing
+    // largo da §10.7 só alcança altas que os lotes reais não fazem.
+    const trava = avaliarTravaLucro({ posicoes_abertas: posicoes, preco_atual: precoAtual, config });
+    for (const t of trava.aplicar) {
+      try {
+        await definirTravaLucro(pid, aid, t.id, { trava_lucro: t.trava_lucro, horario: agora });
+        // O objeto em memória também sobe: a trava recém-armada precisa poder
+        // disparar JÁ neste ciclo. Um lote que subiu e devolveu tudo entre dois
+        // ticks estaria armado e furado ao mesmo tempo, e esperar o tick
+        // seguinte para vender é justamente o atraso que se quer eliminar.
+        const alvo = posicoes.find((p) => p.id === t.id);
+        if (alvo) alvo.trava_lucro = t.trava_lucro;
+        log.info(
+          `[${pid}/${aid}] trava de lucro de ${t.id}: ` +
+            `${t.trava_lucro_anterior ?? 'sem trava'} → ${t.trava_lucro} (${t.motivo})`,
+        );
+      } catch (e) {
+        log.aviso(`[${pid}/${aid}] falha ao armar a trava de lucro em ${t.id}`, e);
+      }
+    }
+
+    travaFurada = posicoesComTravaFurada({ posicoes_abertas: posicoes, preco_atual: precoAtual, config });
+
+    // Assistida: recomenda-se UMA vez por episódio, como no stop. O flag é
+    // limpo quando o preço volta acima da trava.
+    if (assistida) {
+      for (const p of posicoes) {
+        if (p.trava_recomendada_em && Number.isFinite(p.trava_lucro) && precoAtual > p.trava_lucro) {
+          try {
+            await marcarTravaRecomendada(pid, aid, p.id, null); // episódio encerrado
+          } catch (e) {
+            log.aviso(`[${pid}/${aid}] falha ao limpar a trava recomendada de ${p.id}`, e);
+          }
+        }
+      }
+      const jaAvisadas = new Set(posicoes.filter((p) => p.trava_recomendada_em).map((p) => p.id));
+      travaFurada = travaFurada.filter((t) => !jaAvisadas.has(t.id));
+    }
+
+    if (travaFurada.length === 0) return null;
+
+    log.info(
+      `[${pid}/${aid}] TRAVA DE LUCRO atingida em ${travaFurada.length} posição(ões) — preço ${precoAtual}`,
+      { posicoes: travaFurada },
+    );
+  } else {
+    log.aviso(
+      `[${pid}/${aid}] STOP-LOSS atingido em ${furadas.length} posição(ões) — preço ${precoAtual}`,
+      { posicoes: furadas.map((p) => ({ id: p.id, stop_loss: p.stop_loss })) },
+    );
   }
 
-  log.aviso(
-    `[${pid}/${aid}] STOP-LOSS atingido em ${furadas.length} posição(ões) — preço ${precoAtual}`,
-    { posicoes: furadas.map((p) => ({ id: p.id, stop_loss: p.stop_loss })) },
-  );
+  const porTrava = furadas.length === 0;
 
   // --- caminho caro: só depois de confirmar que há chão furado -----------------
   const estadoPlat = await obterEstadoPlataforma(pid);
@@ -688,20 +788,52 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
   // Motor devolve `aguardar` e nada é vendido — a proteção não age no passado.
   const { preco_execucao, ordens_abertas } = await prepararContextoExecucao({ ativo, conector });
 
-  const avaliacao = avaliarStopLoss({
-    posicoes_abertas: carteira.posicoes_abertas,
-    preco_atual: preco_execucao,
-    config,
-    ordens_abertas,
-    carteira: { saldo_ativo: carteira.saldo_ativo },
-  });
+  // A TRAVA DE LUCRO reconfirma na reconsulta pelo mesmo motivo do stop: se o
+  // preço voltou acima dela nesse intervalo, não há nada a realizar.
+  const confirmadas = porTrava
+    ? posicoesComTravaFurada({ posicoes_abertas: carteira.posicoes_abertas, preco_atual: preco_execucao, config })
+    : [];
 
+  // A venda da trava passa pelo `avaliar()` NORMAL — nenhuma via de venda nova
+  // foi criada. É o que mantém a regra imutável 4 valendo por construção: se a
+  // conta da trava estiver errada, o `avaliar()` recusa o lote sem lucro e o
+  // pior desfecho é uma venda que não acontece.
+  const avaliacao = porTrava
+    ? avaliar({
+        decisao: { acao: 'VENDER', percentual: 0, posicoes: confirmadas.map((t) => t.id), valida: true },
+        carteira,
+        posicoes_abertas: carteira.posicoes_abertas,
+        preco_analise: preco_execucao,
+        preco_execucao,
+        ordens_abertas,
+        config,
+        origem: 'trava_lucro',
+      })
+    : avaliarStopLoss({
+        posicoes_abertas: carteira.posicoes_abertas,
+        preco_atual: preco_execucao,
+        config,
+        ordens_abertas,
+        carteira: { saldo_ativo: carteira.saldo_ativo },
+      });
+
+  if (porTrava && confirmadas.length === 0) {
+    log.info(`[${pid}/${aid}] trava de lucro não confirmada na reconsulta (${preco_execucao}) — o preço voltou acima dela`);
+    return null;
+  }
   if (avaliacao.aguardar) {
-    log.info(`[${pid}/${aid}] stop-loss não confirmado na reconsulta (${preco_execucao}): ${avaliacao.motivo}`);
+    log.info(`[${pid}/${aid}] saída automática não confirmada na reconsulta (${preco_execucao}): ${avaliacao.motivo}`);
     return null; // segue o ciclo normal (a IA ainda pode analisar)
   }
   if (avaliacao.status === 'erro') {
-    log.critico(`[${pid}/${aid}] stop-loss bloqueado por estado inconsistente: ${avaliacao.motivo}`);
+    log.critico(`[${pid}/${aid}] saída automática bloqueada por estado inconsistente: ${avaliacao.motivo}`);
+  }
+  if (porTrava && !avaliacao.aprovada) {
+    // Rejeição aqui é informação, não incidente: o Motor recusou realizar
+    // (ordem aberta no par, lote sem lucro na reconsulta). O ciclo segue e a IA
+    // ainda analisa normalmente.
+    log.info(`[${pid}/${aid}] trava de lucro não executada: ${avaliacao.motivo}`);
+    return null;
   }
 
   // Decisão SINTÉTICA: o Motor é o autor, não a IA. `origem_decisao` na
@@ -711,7 +843,9 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
     percentual: 0,
     posicoes: avaliacao.ordem?.posicoes?.map((p) => p.id) ?? null,
     confianca: null,
-    justificativa: `Stop-loss acionado pelo Motor de Regras: preço ${preco_execucao} atingiu o chão de ${furadas.length} posição(ões).`,
+    justificativa: porTrava
+      ? `Trava de lucro acionada pelo Motor de Regras: preço ${preco_execucao} devolveu o pico em ${confirmadas.length} posição(ões).`
+      : `Stop-loss acionado pelo Motor de Regras: preço ${preco_execucao} atingiu o chão de ${furadas.length} posição(ões).`,
     valida: true,
     modelo: null,
   };
@@ -731,17 +865,21 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
   if (assistida && operacao.status === 'sugerida') {
     for (const p of avaliacao.ordem.posicoes) {
       try {
-        await marcarStopRecomendado(pid, aid, p.id, agora);
+        if (porTrava) await marcarTravaRecomendada(pid, aid, p.id, agora);
+        else await marcarStopRecomendado(pid, aid, p.id, agora);
       } catch (e) {
-        log.aviso(`[${pid}/${aid}] falha ao marcar o stop recomendado de ${p.id}`, e);
+        log.aviso(`[${pid}/${aid}] falha ao marcar a saída recomendada de ${p.id}`, e);
       }
     }
   }
 
+  const rotulo = porTrava ? 'TRAVA DE LUCRO' : 'STOP-LOSS';
+  const tipoSaida = porTrava ? 'trava_lucro' : 'stop_loss';
+
   let ultimaOp = estado.ultima_operacao_executada ?? null;
   if (operacao.status === 'executada') {
     log.info(
-      `[${pid}/${aid}] STOP-LOSS executado (${operacao.modo}): ` +
+      `[${pid}/${aid}] ${rotulo} executada (${operacao.modo}): ` +
         `${formatarDinheiro(operacao.valor, moeda)} @ ${formatarDinheiro(operacao.preco, moeda)} ` +
         `— resultado ${formatarDinheiro(operacao.lucro_liquido, moeda)}`,
     );
@@ -749,19 +887,22 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
     await salvarEstadoAtivo(pid, aid, { ultima_operacao_executada: ultimaOp });
   }
 
-  // O stop-loss NÃO mexe no baseline do filtro de variação: ele não é uma
-  // análise da IA, e mover a régua aqui esconderia a variação acumulada da
+  // A saída automática NÃO mexe no baseline do filtro de variação: ela não é
+  // uma análise da IA, e mover a régua aqui esconderia a variação acumulada da
   // próxima análise de verdade.
   await salvarEstadoAtivo(pid, aid, { horario_ultima_verificacao: agora });
+  const envolvidas = porTrava
+    ? posicoes.filter((p) => confirmadas.some((t) => t.id === p.id))
+    : furadas;
   await registrarAnaliseAtivo(pid, aid, {
-    tipo: 'stop_loss',
+    tipo: tipoSaida,
     modo,
     chamou_ia: false,
     preco_atual: precoAtual,
     preco_execucao,
     resultado_regras: { status: avaliacao.status, motivo: avaliacao.motivo },
     operacao_id: operacao?.id ?? null,
-    posicoes: furadas.map((p) => ({
+    posicoes: envolvidas.map((p) => ({
       id: p.id,
       status: p.status,
       origem: p.origem,
@@ -769,12 +910,14 @@ async function verificarStopLoss({ pid, aid, ativo, conector, precoAtual, modo, 
       preco_compra: p.preco_compra,
       stop_loss: p.stop_loss,
       stop_loss_motivo: p.stop_loss_motivo ?? null,
+      trava_lucro: p.trava_lucro ?? null,
+      preco_maximo: p.preco_maximo ?? null,
       lucro_se_vender_agora: p.lucro_se_vender_agora ?? null,
     })),
   });
 
   return {
-    tipo: 'stop_loss',
+    tipo: tipoSaida,
     preco_atual: precoAtual,
     preco_execucao,
     avaliacao,

@@ -88,6 +88,25 @@ test('venda por STOP-LOSS é identificada e mostra o prejuízo', () => {
   assert.doesNotMatch(texto, /simulação/);
 });
 
+test('venda pela TRAVA DE LUCRO tem nome próprio — não se confunde com o stop (V8.11)', () => {
+  // As duas são do Motor e as duas viram "venda" se ninguém as separar. Só que
+  // uma protege de uma queda e a outra realiza um ganho: ler "venda" e não saber
+  // qual das duas foi é perder a única informação que importa no aviso.
+  const texto = formatarOperacao({
+    plataformaId: 'TT',
+    ativoId: 'NVDA',
+    moeda: 'USD',
+    operacao: {
+      tipo: 'VENDA', status: 'executada', modo: 'simulacao',
+      quantidade: 0.12, preco: 219.88, valor: 26.39, lucro_liquido: 2.95,
+      origem_decisao: 'motor_trava_lucro',
+    },
+  });
+  assert.match(texto, /TRAVA DE LUCRO/);
+  assert.match(texto, /\+2\.95 USD/);
+  assert.doesNotMatch(texto, /STOP-LOSS/);
+});
+
 test('venda normal com lucro leva o sinal de + e marca a simulação', () => {
   const texto = formatarOperacao({
     plataformaId: 'TT', ativoId: 'PBR', moeda: 'USD',

@@ -306,11 +306,23 @@ export const CONFIG_ATIVO_PADRAO = {
   // largo equivale a não ter stop, e nenhuma edição de prompt pode desativar a
   // proteção na prática.
   stop_loss_max_distancia_percentual: 15,
-  // Distância que o TRAILING AUTOMÁTICO do Motor mantém abaixo do preço
-  // enquanto a posição está em lucro (§10.3). A IA pode declarar um valor por
-  // posição na compra (`trailing_percentual`, calibrado pela volatilidade);
-  // este é o padrão de quem não declarou e das posições anteriores.
-  stop_loss_trailing_percentual: 3,
+  // FOLGA do ativo (§10.7): distância do trailing automático do Motor E
+  // distância mínima de qualquer chão. A IA pode ALARGÁ-la por posição na
+  // compra (`trailing_percentual`); esta config é o PISO.
+  //
+  // Era 3% até a V8.11, e caiu para 2% depois dos números de produção
+  // (2026-08-05): nos 23 lotes fechados desde o reset, o topo mediano foi de
+  // +1,09% e o maior de todos +3,07%. Uma folga larga aqui não protegia mais —
+  // só empurrava o chão para longe demais para travar qualquer coisa. Quem
+  // realiza lucro agora é a TRAVA (§10.8), então esta folga voltou a ter um
+  // trabalho só: aguentar o ruído do dia sem entregar o lote.
+  stop_loss_trailing_percentual: 2,
+  // TRAVA DE LUCRO (V8.11, §10.8) — o segundo chão, o estreito, que só existe
+  // acima do breakeven do lote. Gatilho: quanto o pico precisa passar do
+  // breakeven para armar. Devolução: quanto do pico se aceita devolver antes de
+  // realizar. Qualquer um dos dois em 0 desliga a trava naquele ativo.
+  trava_lucro_gatilho_percentual: 1.0,
+  trava_lucro_devolucao_percentual: 0.8,
   // Mínimos operacionais POR ATIVO (saíram do código — V2_Plan.MD §B.6).
   // `minimo_ordem_valor` na moeda da plataforma; quantidade na unidade do ativo.
   minimo_ordem_valor: 10,

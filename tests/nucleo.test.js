@@ -444,6 +444,81 @@ test('stop-loss é checado ANTES do filtro de variação (queda pequena ainda di
   assert.equal(r.operacao.status, 'executada');
 });
 
+// ------------------------------------------- kill-switch da IA (V8.10)
+// O botão "Desligar IA" da dashboard existe para SEGURANÇA: parar de gastar a
+// chave (e de abrir posição) sem parar o robô. Os três testes abaixo guardam o
+// contrato inteiro — se o do meio afrouxar, o botão vira uma armadilha, porque
+// as posições ficariam sem chão parecendo protegidas.
+
+test('IA desligada: o ciclo NÃO chama a IA e o baseline da variação não avança', async () => {
+  const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
+  const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
+
+  const r = await executarCicloAtivo({
+    plataforma,
+    api: { api_key_ia: 'chave-falsa' },
+    ativo,
+    ativosDaPlataforma: [ativo],
+    conector: conectorFalso({ preco: 110000, saldoMoeda: 800 }),
+    estado,
+    iaDesligada: true,
+    decidirFn: async () => {
+      throw new Error('a IA não deve ser consultada com o kill-switch ligado');
+    },
+  });
+
+  assert.equal(r.tipo, 'ia_desligada');
+  // O baseline continua no preço da última análise DE VERDADE: quando a IA
+  // voltar, ela vê a variação acumulada, não um degrau engolido pelo desligamento.
+  assert.equal(r.estado.preco_ultima_analise, estado.preco_ultima_analise);
+});
+
+test('IA desligada: o stop-loss continua vendendo (o botão corta a decisão, não a proteção)', async () => {
+  const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
+  const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
+
+  const r = await executarCicloAtivo({
+    plataforma,
+    api: { api_key_ia: 'chave-falsa' },
+    ativo,
+    ativosDaPlataforma: [ativo],
+    conector: conectorFalso({ preco: 94000, saldoMoeda: 800 }), // fura o chão
+    estado,
+    iaDesligada: true,
+    decidirFn: async () => {
+      throw new Error('a IA não deve ser consultada');
+    },
+  });
+
+  assert.equal(r.tipo, 'stop_loss');
+  assert.equal(r.operacao.status, 'executada');
+  const [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
+  assert.equal(posicao.fechada_por, 'stop_loss');
+});
+
+test('IA desligada: nenhuma posição nova é aberta (nem com o preço convidando)', async () => {
+  const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
+  const plataforma = { id: 'MB', modelos_ia: ['falso'], timezone: 'America/Sao_Paulo' };
+  const ativo = await obterAtivo('MB', 'BTC');
+
+  const r = await executarCicloAtivo({
+    plataforma,
+    api: { api_key_ia: 'chave-falsa' },
+    ativo,
+    ativosDaPlataforma: [ativo],
+    conector: conectorFalso({ preco: 100000, saldoMoeda: 1000 }),
+    iaDesligada: true,
+    decidirFn: async () => ({
+      acao: 'COMPRAR', percentual: 50, stop_loss: 95000,
+      stop_loss_motivo: 'x', justificativa: 'T.', valida: true,
+    }),
+  });
+
+  assert.equal(r.tipo, 'ia_desligada');
+  assert.equal(r.operacao, undefined);
+  assert.equal((await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao')).length, 0);
+});
+
 test('preço acima do chão segue o ciclo normal (o stop não interfere)', async () => {
   const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
   const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
@@ -487,9 +562,9 @@ test('ajuste da IA que aperta o chão dentro da folga é RECUSADO no ciclo real 
   });
 
   let [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
-  // Quem manda no chão é o trailing do Motor: 3% de 110.000. O pedido da IA
-  // ficaria a 1,8% do preço e foi descartado.
-  assert.equal(posicao.stop_loss, 106700);
+  // Quem manda no chão é o trailing do Motor: a folga padrão (2% desde a V8.11)
+  // de 110.000. O pedido da IA ficaria a 1,8% do preço e foi descartado.
+  assert.equal(posicao.stop_loss, 107800);
   assert.match(posicao.stop_loss_motivo, /trailing do Motor/);
 
   // Nova tentativa, agora BAIXANDO o chão: tem de ser descartada também.
@@ -511,9 +586,9 @@ test('ajuste da IA que aperta o chão dentro da folga é RECUSADO no ciclo real 
 
   [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
   // O pedido de 90.000 foi descartado; o chão ainda SUBIU, porque o trailing
-  // automático do Motor o levou a 3% de 112.000 = 108.640.
-  assert.equal(posicao.stop_loss, 108640, 'o chão não pode ser rebaixado');
-  assert.ok(posicao.stop_loss > 106700, 'o chão só anda para cima');
+  // automático do Motor o levou à folga (2%) de 112.000 = 109.760.
+  assert.equal(posicao.stop_loss, 109760, 'o chão não pode ser rebaixado');
+  assert.ok(posicao.stop_loss > 107800, 'o chão só anda para cima');
 });
 
 test('ajuste da IA COM folga é aplicado em posição fora do lucro (o trailing não age lá)', async () => {
@@ -535,7 +610,7 @@ test('ajuste da IA COM folga é aplicado em posição fora do lucro (o trailing 
       percentual: 0,
       justificativa: 'T.',
       valida: true,
-      // 3,4% abaixo de 101.000: respeita a folga de 3% do ativo.
+      // 3,4% abaixo de 101.000: respeita a folga do ativo.
       ajustes_stop_loss: [{ id: antes.id, stop_loss: 97500, motivo: 'reduzindo risco' }],
     }),
   });
@@ -551,7 +626,7 @@ test('trailing do Motor sobe o chão em ciclo que NEM CHAMA a IA', async () => {
   const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
   const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
 
-  // 1) Preço sobe forte: a IA é chamada e o trailing põe o chão em 3% de 110.000.
+  // 1) Preço sobe forte: a IA é chamada e o trailing põe o chão na folga (2%) de 110.000.
   const r1 = await executarCicloAtivo({
     plataforma,
     api: { api_key_ia: 'chave-falsa' },
@@ -562,7 +637,7 @@ test('trailing do Motor sobe o chão em ciclo que NEM CHAMA a IA', async () => {
     decidirFn: async () => ({ acao: 'AGUARDAR', percentual: 0, justificativa: 'T.', valida: true }),
   });
   let [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
-  assert.equal(posicao.stop_loss, 106700);
+  assert.equal(posicao.stop_loss, 107800);
 
   // 2) Preço sobe só 0,18%: abaixo do mínimo de variação, a IA NÃO é consultada
   //    — e ainda assim o chão tem de subir.
@@ -583,7 +658,7 @@ test('trailing do Motor sobe o chão em ciclo que NEM CHAMA a IA', async () => {
   assert.equal(chamouIA, false, 'a IA não podia ser chamada neste ciclo');
   assert.equal(r2.tipo, 'sem_variacao');
   [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
-  assert.equal(posicao.stop_loss, 106894, 'o Motor subiu o chão sozinho');
+  assert.equal(posicao.stop_loss, 107996, 'o Motor subiu o chão sozinho');
 });
 
 test('assistida: stop vira RECOMENDAÇÃO uma vez só (não repete a cada ciclo)', async () => {

@@ -67,6 +67,9 @@ const CAMPOS_POSICAO = {
   stop_loss_trailing_percentual: 'trailing do Motor (null = usa a config)',
   taxa_compra: 'breakeven pela taxa EFETIVA (§10.4)',
   aberta_modo: 'query das posições abertas (invariante V5.2)',
+  // regrasEngine.avaliarTravaLucro / posicoesComTravaFurada (V8.11, §10.8)
+  trava_lucro: 'trava de lucro — o segundo chão (null enquanto não armou)',
+  trava_lucro_em: 'quando a trava foi armada/elevada (null enquanto não armou)',
 };
 
 /** Campos que só existem depois do fechamento — antes disso são null. */

@@ -409,6 +409,167 @@ export function avaliarTrailingStop({ posicoes_abertas, preco_atual, config }) {
   return { aplicar };
 }
 
+// ============================================================================
+// TRAVA DE LUCRO (V8.11 — §10.8)
+// ============================================================================
+//
+// O PROBLEMA que ela resolve, medido em produção (2026-08-05, 23 lotes fechados
+// desde o reset): topo mediano do lote +1,09%, maior topo de todos +3,07%. Com
+// a folga em 5%, o chão do trailing só começa a travar lucro quando o preço
+// passa de +5,3% (TT) a +6,7% (MB) — patamar que NENHUM lote alcançou. Ou seja:
+// a trava de lucro do sistema não estava "apertada demais", ela era
+// inalcançável. Todo lote vencedor devolvia o movimento inteiro e morria no
+// stop. Placar: 17 stops (−36,54) contra 6 vendas no lucro (+11,23).
+//
+// A CAUSA é um número fazendo dois trabalhos opostos. A folga (§10.7) precisa
+// ser LARGA para o chão de proteção sobreviver ao ruído do dia; a trava de
+// lucro precisa ser ESTREITA, menor que o movimento típico, senão nunca dispara.
+// A V8.8 fundiu as duas coisas num número só e escolheu o valor largo — o lado
+// do lucro desapareceu sem que nada acusasse, porque o mecanismo continuava
+// rodando e "funcionando".
+//
+// A SOLUÇÃO é separá-las de novo, mas com papéis explícitos:
+//   · stop_loss   → chão LARGO (a folga). Pode vender no prejuízo. Exceção da §4.
+//   · trava_lucro → chão ESTREITO, e só existe ACIMA do breakeven do lote.
+//
+// Por que a trava NÃO é uma terceira exceção à regra imutável 4: ela nunca
+// desce abaixo do breakeven, e a venda que ela dispara passa pelo `avaliar()`
+// normal — o mesmo caminho que recusa qualquer lote sem lucro líquido positivo.
+// Se algum dia esta conta estiver errada, o pior que acontece é uma venda
+// rejeitada, nunca uma venda no vermelho. É a regra 4 sendo APLICADA, não
+// contornada.
+
+/** Quanto o lote precisa subir acima do breakeven para ARMAR a trava (%). */
+export const TRAVA_LUCRO_GATILHO_PADRAO = 1.0;
+
+/** Quanto do PICO se aceita devolver antes de realizar o lucro (%). */
+export const TRAVA_LUCRO_DEVOLUCAO_PADRAO = 0.8;
+
+/**
+ * Os dois números da trava, vindos da config do ativo (editáveis na dashboard).
+ * Gatilho OU devolução em 0 desliga a trava naquele ativo — é o interruptor,
+ * e o sistema volta a se comportar exatamente como na V8.8.
+ */
+export function travaLucroConfig(config) {
+  const gatilho = numeroValido(config?.trava_lucro_gatilho_percentual)
+    ? config.trava_lucro_gatilho_percentual
+    : TRAVA_LUCRO_GATILHO_PADRAO;
+  const devolucao = numeroValido(config?.trava_lucro_devolucao_percentual)
+    ? config.trava_lucro_devolucao_percentual
+    : TRAVA_LUCRO_DEVOLUCAO_PADRAO;
+  return { gatilho, devolucao, ligada: gatilho > 0 && devolucao > 0 };
+}
+
+/**
+ * TRAVA DE LUCRO — sobe o segundo chão, o estreito, a cada ciclo.
+ *
+ * Arma quando o PICO do lote passa de `breakeven × (1 + gatilho%)`. Repare que
+ * quem arma é o PICO, não o preço de agora: uma vez armada, a trava não
+ * desarma se o preço recuar — é justamente aí que ela precisa estar de pé.
+ *
+ * Armada, ela fica `devolucao%` abaixo do pico, e NUNCA abaixo do breakeven.
+ * Esse piso é o que torna a trava incapaz de gerar prejuízo, e é ele que
+ * dispensa a folga mínima da §10.7: a folga existe para o chão não ser furado
+ * por ruído no vermelho; aqui o pior desfecho do ruído é realizar um lucro
+ * menor do que daria para esperar. Trocar prejuízo por lucro pequeno é
+ * exatamente o negócio que se quer fazer.
+ *
+ * Só SOBE, como todo chão deste sistema, e ignora movimento abaixo do limiar
+ * de ruído — senão seria uma escrita por posição por tick.
+ *
+ * @returns {{ aplicar: [{ id, trava_lucro, trava_lucro_anterior, motivo }] }}
+ */
+export function avaliarTravaLucro({ posicoes_abertas, preco_atual, config }) {
+  const aplicar = [];
+  if (!Array.isArray(posicoes_abertas) || !numeroValido(preco_atual) || preco_atual <= 0) return { aplicar };
+  if (!config || !numeroValido(config.taxa_compra_percentual) || !numeroValido(config.taxa_venda_percentual)) {
+    return { aplicar };
+  }
+  const { gatilho, devolucao, ligada } = travaLucroConfig(config);
+  if (!ligada) return { aplicar };
+
+  for (const p of posicoes_abertas) {
+    if (!p || p.status === 'FECHADA' || p.status === 'VENDA') continue;
+    if (!numeroValido(p.preco_compra) || p.preco_compra <= 0) continue;
+    if (!numeroValido(p.quantidade) || p.quantidade <= 0) continue;
+
+    // O pico é a régua. Lote sem `preco_maximo` (aberto antes da V8.5) usa o
+    // preço de agora como melhor esforço — a partir daí o pico é real.
+    const pico = numeroValido(p.preco_maximo) && p.preco_maximo > 0 ? Math.max(p.preco_maximo, preco_atual) : preco_atual;
+    const breakeven = breakevenPosicao(p, config);
+    if (pico < breakeven * (1 + gatilho / 100)) continue; // ainda não armou
+
+    const valor = Math.max(
+      Math.round(pico * (1 - devolucao / 100) * 100) / 100,
+      Math.round(breakeven * 100) / 100,
+    );
+
+    const vigente = numeroValido(p.trava_lucro) && p.trava_lucro > 0 ? p.trava_lucro : null;
+    if (vigente !== null) {
+      if (valor <= vigente) continue; // a trava só sobe
+      const salto = ((valor - vigente) / preco_atual) * 100;
+      if (salto < TRAILING_MOVIMENTO_MINIMO_PERCENTUAL) continue; // ruído: não vale uma escrita
+    }
+
+    aplicar.push({
+      id: p.id,
+      trava_lucro: valor,
+      trava_lucro_anterior: vigente,
+      motivo: `trava de lucro: ${devolucao}% abaixo do pico de ${pico}`,
+    });
+  }
+  return { aplicar };
+}
+
+/**
+ * Quais lotes furaram a TRAVA DE LUCRO e ainda dão lucro líquido positivo.
+ *
+ * A segunda condição não é redundante com o piso no breakeven: entre o ciclo em
+ * que a trava foi gravada e este, o preço pode ter desabado direto para o
+ * vermelho (gap, notícia, fim de semana). Nesse caso a trava simplesmente não
+ * dispara e o lote continua sob o stop-loss largo, que é quem cuida de perda.
+ *
+ * Devolve só a LISTA — quem executa é o `cicloAtivo`, montando uma decisão
+ * sintética VENDER que passa pelo `avaliar()` de sempre. Nenhuma via de venda
+ * nova foi criada, e por isso a regra imutável 4 continua valendo por
+ * construção: `avaliar()` recusa lote sem lucro, venha o pedido de onde vier.
+ *
+ * @returns {[{ id, trava_lucro, lucro_liquido_previsto }]}
+ */
+export function posicoesComTravaFurada({ posicoes_abertas, preco_atual, config }) {
+  if (!Array.isArray(posicoes_abertas) || !numeroValido(preco_atual) || preco_atual <= 0) return [];
+  if (!config || !numeroValido(config.taxa_compra_percentual) || !numeroValido(config.taxa_venda_percentual)) return [];
+  if (!travaLucroConfig(config).ligada) return [];
+  const minimoQuantidade = numeroValido(config.minimo_ordem_quantidade)
+    ? config.minimo_ordem_quantidade
+    : MINIMO_ORDEM_QUANTIDADE_FALLBACK;
+
+  const furadas = [];
+  for (const p of posicoes_abertas) {
+    if (!p || p.status === 'FECHADA' || p.status === 'VENDA') continue;
+    if (!numeroValido(p.trava_lucro) || p.trava_lucro <= 0) continue; // sem trava armada
+    if (preco_atual > p.trava_lucro) continue; // trava intacta
+    if (!numeroValido(p.preco_compra) || p.preco_compra <= 0) continue;
+    if (!numeroValido(p.quantidade) || p.quantidade < minimoQuantidade) continue;
+
+    const lucro = calcularLucroLiquidoVenda({
+      quantidade: p.quantidade,
+      preco_venda: preco_atual,
+      preco_compra: p.preco_compra,
+      taxa_compra_percentual: taxaCompraPercentualEfetiva(p, config),
+      taxa_venda_percentual: config.taxa_venda_percentual,
+    });
+    if (lucro <= 0) continue; // o stop-loss é que cuida de prejuízo, não a trava
+
+    furadas.push({
+      id: p.id,
+      trava_lucro: p.trava_lucro,
+      lucro_liquido_previsto: Math.round(lucro * 100) / 100,
+    });
+  }
+  return furadas;
+}
+
 /**
  * PICO da posição (V8.5) — quais lotes abertos fizeram máxima nova agora.
  *
@@ -787,6 +948,7 @@ export function avaliar({
   patrimonio_atual = null,
   patrimonio_inicio_dia = null,
   modo_vendas = null,
+  origem = null,
 }) {
   // --- item 7: sanidade dos dados (bloqueia qualquer avaliação sobre lixo) ----
   if (!decisao || typeof decisao !== 'object' || !ACOES.has(decisao.acao)) {
@@ -1041,6 +1203,10 @@ export function avaliar({
     const comPrejuizo = aprovadas.filter((p) => p.venda_com_prejuizo);
     ordem = {
       tipo: 'VENDA',
+      // Quem pediu esta venda. `null` = a IA (o caso normal). 'trava_lucro'
+      // (V8.11) = o Motor, ao ver o lote devolver o pico — mesma validação, só
+      // muda o autor registrado na operação.
+      origem,
       quantidade: arredondarQuantidade(aprovadas.reduce((s, p) => s + p.quantidade, 0)),
       posicoes: aprovadas,
       posicoes_descartadas: descartadas,

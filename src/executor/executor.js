@@ -231,6 +231,11 @@ async function executarEregistrar({ plataformaId, ativo, conector, avaliacao, de
   // pintar o marcador em cor própria e para o banco permitir filtrar essas
   // vendas depois — é a base da análise do agente semanal.
   const porStopLoss = avaliacao.ordem?.origem === 'stop_loss';
+  // Venda disparada pela TRAVA DE LUCRO (V8.11): também é o Motor decidindo
+  // sozinho, mas pelo motivo oposto ao do stop — o lote SUBIU e começou a
+  // devolver o pico. Separar as duas origens é o que permite medir depois se a
+  // trava está realizando cedo ou tarde demais, sem misturar com os stops.
+  const porTravaLucro = avaliacao.ordem?.origem === 'trava_lucro';
   const registroBase = {
     id: gerarIdOperacao(),
     plataforma: plataformaId,
@@ -250,7 +255,11 @@ async function executarEregistrar({ plataformaId, ativo, conector, avaliacao, de
     // que ao menos um lote saiu no vermelho — a segunda (e última) origem capaz
     // de `lucro_liquido` negativo. Separá-la de `ia` é o que permite, depois,
     // medir a liquidação sem contaminar a estatística das vendas normais.
-    origem_decisao: porStopLoss ? 'motor_stop_loss' : (avaliacao.ordem?.venda_com_prejuizo ? 'ia_modo_vendas' : 'ia'),
+    origem_decisao: porStopLoss
+      ? 'motor_stop_loss'
+      : porTravaLucro
+        ? 'motor_trava_lucro'
+        : (avaliacao.ordem?.venda_com_prejuizo ? 'ia_modo_vendas' : 'ia'),
     // Só nas vendas por stop: o chão de cada posição e o motivo que a IA deu
     // quando o definiu — o "porquê" viaja junto da operação, para auditoria.
     stop_loss: porStopLoss

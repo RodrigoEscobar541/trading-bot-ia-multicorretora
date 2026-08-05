@@ -8,7 +8,8 @@
     ],
     "headers": [
       {
-        "source": "**/*.@(js|css)",
+        "//": "HTML JUNTO com js/css, e não por capricho: o padrão do Firebase Hosting para HTML é max-age=3600. Com o JS em no-cache e o HTML cacheado por uma hora, um deploy entrega ao navegador o SCRIPT NOVO rodando sobre a PÁGINA VELHA — e o script procura elementos que aquele HTML ainda não tem. Foi o que aconteceu em 2026-08-05, quando a seção Steam subiu: a navegação quebrava no meio e deixava a tela anterior na frente do dono.",
+        "source": "**/*.@(js|css|html)",
         "headers": [
           {
             "key": "Cache-Control",

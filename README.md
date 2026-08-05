@@ -4,14 +4,11 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-informational)](https://nodejs.org)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-informational)](LICENSE)
 
-Plataforma autônoma de análise e execução de operações que roda 24/7 em cinco
+Plataforma autônoma de análise e execução de operações que roda 24/7 em quatro
 mercados ao mesmo tempo — **Mercado Bitcoin** e **Binance** (cripto em BRL),
 **Tastytrade** (ações dos EUA em USD), **Toro** (ações/FIIs da B3) e o **Mercado
-da Comunidade Steam** (skins de CS2) — os dois últimos em modo assistido, em que
-o robô analisa e recomenda mas nunca envia ordem. Para cada ativo o sistema
-coleta dados de mercado, calcula os indicadores técnicos no próprio código
-(ou constrói a série de preço sozinho, onde o mercado não fornece histórico),
-monta um prompt em camadas para o
+da Comunidade Steam** (skins de CS2), estes dois últimos em modo assistido. Para cada ativo o sistema coleta dados de mercado, calcula os
+indicadores técnicos no próprio código, monta um prompt em camadas para o
 **Gemini** decidir `COMPRAR` / `VENDER` / `AGUARDAR`, e submete essa decisão a um
 **Motor de Regras determinístico** que tem sempre a última palavra.
 
@@ -19,8 +16,8 @@ monta um prompt em camadas para o
 | :--- | :--- |
 | **Stack** | Node.js 22+ · JavaScript puro (ESM) · Firestore · Firebase Hosting/Auth · Gemini API |
 | **Dependências de runtime** | **uma** (`firebase-admin`) — HTTP, WebSocket, assinatura HMAC e o painel web são todos sem framework |
-| **Testes** | **510**, em `node:test` — sem Jest, sem mocks de biblioteca |
-| **Tamanho** | ~12.200 linhas em `src/` (48 módulos) · ~8.100 de teste · ~4.500 no painel |
+| **Testes** | **532**, em `node:test` — sem Jest, sem mocks de biblioteca |
+| **Tamanho** | ~12.700 linhas em `src/` (48 módulos) · ~8.600 de teste · ~4.700 no painel |
 | **Em produção** | processo único numa VPS sob `pm2`, com deploy automático e heartbeat visível no painel |
 
 > ℹ️ Esta é a **cópia pública** de um projeto pessoal em operação. Credenciais,
@@ -83,6 +80,7 @@ flowchart TD
 | **O stop-loss precisava rodar mais que a IA.** Uma queda pode furar o chão sem que a variação acumulada justifique gastar uma chamada de LLM. | O stop virou uma **via separada do Motor**, executada a cada ciclo, antes do filtro que decide se vale chamar a IA. Medido em produção: 127 ciclos para ~20 chamadas de IA. |
 | **"Elevar o stop até o preço de entrada zera o risco" — é falso.** Nesse preço a posição ainda paga as duas pernas de taxa e sai no vermelho. | O breakeven virou uma **fórmula única e canônica**, usada nos três lugares que precisam concordar: o JSON da IA, a regra de venda e o trailing. Divergir faria a IA propor vendas que o Motor rejeitaria. |
 | **O stop vinha dando prejuízo — e a causa não era o stop.** A IA subia o chão até colar no preço, ancorando em médias de 15 minutos; o ruído normal do dia matava o lote no zero. | Um número por ativo — a **folga mínima** — passou a governar toda distância de chão. A configuração do dono é o **piso** dela, e a IA só pode alargar. Diagnóstico feito com os dados de produção, incluindo o registro do que os números *não* sustentavam. |
+| **O mecanismo que deveria realizar lucro nunca disparava — e o sistema não acusava nada.** O chão que sobe só travava ganho depois de uma alta que os lotes reais nunca faziam: o topo mediano deles era cinco vezes menor que o exigido. | Duas distâncias que estavam fundidas num número só foram **separadas por papel**: um chão largo, que corta prejuízo e precisa aguentar o ruído do dia, e uma **trava de lucro** estreita, que só existe acima do ponto de empate do lote. A trava não virou uma exceção nova à regra de nunca vender no prejuízo — a venda dela passa pelo mesmo validador de sempre, então uma conta errada ali produz uma venda que não acontece, nunca uma perda. |
 | **A IA repetia o mesmo viés por dezenas de análises** e ninguém percebia. | Um **segundo agente**, semanal, audita o primeiro e reescreve uma camada do prompt dele. Ele não emite ordem, não toca em posição e não escreve no que o dono escreveu; um validador recusa a versão inteira e mantém a anterior se ele tentar mudar o formato de saída ou revogar uma regra. |
 | **Uma métrica cega ninguém percebe.** Uma régua de risco ficou semanas inútil porque o campo que ela lia nunca era gravado. | Um teste lista, **por consumidor**, os campos que ele lê, e prova que uma posição criada pelo código de verdade os tem. Campo nulo é aceito; ausente nunca — `undefined` desaparece no JSON e a métrica passa a mentir "sem amostra". |
 | **O Firestore cobra por leitura, e um tick de 1 minuto multiplica tudo por 1.440.** | Catálogo de configuração em cache com TTL, cada documento no escopo em que ele varia, estado de agendamento em memória e nenhuma query sem limite em coleção que cresce. Resultado medido: ~23 mil → ~5 mil leituras/dia. |
@@ -116,13 +114,13 @@ src/
 ├── regras/            # regrasEngine: a última palavra antes de qualquer execução
 ├── posicoes/          # lotes independentes por (plataforma, ativo)
 ├── executor/          # executor (real ou simulado) + simulador (carteira virtual)
-├── conectores/        # contrato + mb/ bn/ tt/ toro/ steam/ — nada fora daqui fala com o mercado
+├── conectores/        # contrato + mb/ bn/ tt/ toro/ steam/ — nada fora daqui fala com corretora
 ├── ia/                # iaClient (Gemini), montador do prompt em camadas, validadores
 ├── notificacoes/      # telegram — e o contrato de NUNCA lançar
 ├── firebase/          # única camada de persistência (Firestore ou memória)
 └── utils/             # logger com redação de segredos, formatadores
 dashboard/public/      # painel web: SVG puro para os gráficos, sem framework
-tests/                 # 510 testes em node:test
+tests/                 # 532 testes em node:test
 .md/                   # as sementes dos prompts — versionadas como código
 ```
 
@@ -133,7 +131,7 @@ projeto Firebase. Passo a passo completo em **[INSTALACAO.md](INSTALACAO.md)**.
 
 ```bash
 npm install
-npm test              # 510 testes, sem precisar de credencial nenhuma
+npm test              # 532 testes, sem precisar de credencial nenhuma
 
 cp .env.example .env  # preencha as chaves (nunca versionado)
 npm start             # bot 24/7

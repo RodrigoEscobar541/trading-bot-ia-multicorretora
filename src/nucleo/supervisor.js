@@ -86,7 +86,19 @@ export function naJanelaDeQuota(agora = new Date(), horaLimite = 6) {
  * decisões): reiniciar o bot não dispara supervisão fora de hora nem empurra a
  * próxima para frente.
  */
-export function deveSupervisionar({ supervisao, agora = new Date(), forcar = false, config = {}, modoVendas = null } = {}) {
+export function deveSupervisionar({
+  supervisao,
+  agora = new Date(),
+  forcar = false,
+  config = {},
+  modoVendas = null,
+  iaDesligada = false,
+} = {}) {
+  // KILL-SWITCH DA IA (V8.10): o dono desligou a chave da IA na dashboard, e o
+  // supervisor é uma chamada de IA como qualquer outra — a mais cara delas.
+  // Antes do `forcar` pelo mesmo motivo do modo vendas: "rodar agora" adianta a
+  // rodada, não autoriza usar uma chave que o dono acabou de desligar.
+  if (iaDesligada) return { rodar: false, motivo: 'IA desligada — supervisor pausado' };
   // MODO VENDAS (V8): pausado, e isto vem ANTES do `forcar` de propósito. O
   // supervisor audita decisões de ENTRADA — quando comprar, que chão usar, que
   // tamanho — e durante uma liquidação reescreveria o prompt do analista com

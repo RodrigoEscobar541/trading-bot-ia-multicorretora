@@ -234,6 +234,24 @@ test('supervisor desligado não roda — e o pedido manual ainda assim roda', ()
   assert.equal(deveSupervisionar({ supervisao: null, agora, config, forcar: true }).rodar, true);
 });
 
+test('IA desligada pausa o supervisor — e o "rodar agora" não fura o kill-switch (V8.10)', () => {
+  const agora = new Date('2026-08-08T09:00:00Z'); // dentro da janela de quota
+  const vencida = { gerado_em: '2026-07-01T00:00:00Z' };
+
+  const auto = deveSupervisionar({ supervisao: vencida, agora, iaDesligada: true });
+  assert.equal(auto.rodar, false);
+  assert.match(auto.motivo, /IA desligada/);
+
+  // O botão da dashboard adianta a rodada; ele não autoriza usar uma chave que
+  // o dono acabou de desligar (mesma regra do modo vendas).
+  const manual = deveSupervisionar({ supervisao: vencida, agora, forcar: true, iaDesligada: true });
+  assert.equal(manual.rodar, false);
+  assert.match(manual.motivo, /IA desligada/);
+
+  // Contrato do "nada mudou": com a IA ligada, tudo segue como antes.
+  assert.equal(deveSupervisionar({ supervisao: vencida, agora, iaDesligada: false }).rodar, true);
+});
+
 // --------------------------------------------------------- rodada completa
 
 const AGORA = new Date('2026-08-01T09:00:00Z');

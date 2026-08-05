@@ -1,7 +1,7 @@
 {
   "name": "ia-investidora",
   "version": "2.1.0",
-  "description": "Plataforma autônoma de análise e execução multi-ativo (Mercado Bitcoin: BTC, ETH, SOL) com decisão por IA (Gemini). Especificação completa em CLAUDE.md e regras.md.",
+  "description": "Plataforma autônoma de análise e execução multi-ativo e multi-corretora (Mercado Bitcoin, Binance, Tastytrade, Toro, Steam) com decisão por IA (Gemini) validada por um Motor de Regras determinístico. Especificação completa em CLAUDE.md e regras.md.",
   "type": "module",
   "private": true,
   "engines": {

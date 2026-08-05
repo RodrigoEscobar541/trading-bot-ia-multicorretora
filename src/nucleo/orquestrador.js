@@ -186,7 +186,7 @@ async function gerarRelatorioSeVencido() {
  * Falha aqui nunca é fatal: a camada de prompt anterior continua valendo, que
  * é exatamente o comportamento seguro.
  */
-async function supervisionarSeVencido({ forcar = false, modoVendas = null } = {}) {
+async function supervisionarSeVencido({ forcar = false, modoVendas = null, iaDesligada = false } = {}) {
   const config = await supervisorConfigCache();
   if (config.ativo === false && !forcar) return;
   if (!forcar && !naJanelaDeQuota()) return;
@@ -209,9 +209,9 @@ async function supervisionarSeVencido({ forcar = false, modoVendas = null } = {}
   // desligar o modo traz o supervisor de volta, e a régua dos 7 dias continua
   // sendo o `gerado_em` persistido.
   const supervisao = await obterSupervisao();
-  const { rodar, motivo } = deveSupervisionar({ supervisao, forcar, config, modoVendas });
+  const { rodar, motivo } = deveSupervisionar({ supervisao, forcar, config, modoVendas, iaDesligada });
   if (!rodar) {
-    if (modoVendas?.ativo && forcar) log.aviso(`supervisão pedida pela dashboard foi recusada: ${motivo}`);
+    if ((modoVendas?.ativo || iaDesligada) && forcar) log.aviso(`supervisão pedida pela dashboard foi recusada: ${motivo}`);
     return;
   }
 
@@ -368,7 +368,15 @@ async function obterMercadoDaPlataforma(plataforma, conector, ligados) {
  * ligados cujo intervalo venceu. Devolve um resumo por ativo executado.
  * `decidirFn` é injetável para testes.
  */
-export async function executarRodada({ agora = new Date(), decidirFn, modoVendas = null, forcarInventario = false } = {}) {
+export async function executarRodada({
+  agora = new Date(),
+  decidirFn,
+  modoVendas = null,
+  forcarInventario = false,
+  // Kill-switch da IA (V8.10): a rodada acontece normalmente, mas nenhum ativo
+  // chama a IA. As saídas automáticas do Motor seguem valendo (ver cicloAtivo).
+  iaDesligada = false,
+} = {}) {
   const resumo = [];
   // Config vem do catálogo cacheado (TTL 5 min) — o tick de 1 min não relê
   // plataformas/chaves/ativos do Firestore (V5_2_Plan.MD §2.1). O filtro por
@@ -461,6 +469,7 @@ export async function executarRodada({ agora = new Date(), decidirFn, modoVendas
           conector,
           estado,
           modoVendas, // liquidação (V8) — null quando o modo está desligado
+          iaDesligada, // chave da IA desligada pela dashboard (V8.10)
           // Saiu atualização do jogo nesta rodada: os ativos desta plataforma
           // analisam mesmo sem o preço ter se mexido (o preço se move DEPOIS
           // da notícia, e é justamente isso que se quer avaliar antes).
@@ -540,7 +549,13 @@ const BOT_INICIADO_EM = new Date().toISOString();
  * Objeto de heartbeat do bot (doc `global/status_bot`) — puro e testável. A
  * dashboard usa `atualizado_em` para dizer se o PROCESSO está vivo agora.
  */
-export function montarStatusBot({ agora = new Date(), ultimaRodada = null, travado = false, modoVendas = null } = {}) {
+export function montarStatusBot({
+  agora = new Date(),
+  ultimaRodada = null,
+  travado = false,
+  modoVendas = null,
+  iaDesligada = false,
+} = {}) {
   return {
     atualizado_em: agora.toISOString(),
     iniciado_em: BOT_INICIADO_EM,
@@ -552,6 +567,9 @@ export function montarStatusBot({ agora = new Date(), ultimaRodada = null, trava
     // Confirma para a dashboard que o BOT viu a parada de emergência (não só
     // que o flag foi escrito) — V6.2.
     travado,
+    // Mesma confirmação para o kill-switch da IA (V8.10): a dashboard escreve o
+    // flag, mas quem prova que a chave parou de ser usada é o bot.
+    ia_desligada: iaDesligada,
     // Mesma ideia para a liquidação (V8): a dashboard escreve o flag, mas quem
     // confirma o dia e a tolerância VIGENTES é o bot — o número que aparece na
     // tela é o mesmo que o Motor está usando, não uma conta refeita no
@@ -580,6 +598,7 @@ export async function iniciarOrquestrador() {
   let ultimaRodada = null; // última rodada NÃO vazia (mostrada no heartbeat)
   let avisouTravado = false; // loga a transição travado/destravado uma vez
   let avisouModoVendas = false; // idem para a liquidação (V8)
+  let avisouIaDesligada = false; // idem para o kill-switch da IA (V8.10)
   // Marca de invalidação do estado em memória vista no tick anterior.
   // `undefined` = ainda nenhum tick leu o controle (ver deveLimparEstadoEmMemoria).
   let invalidacaoVista;
@@ -596,6 +615,7 @@ export async function iniciarOrquestrador() {
     let pedidoSupervisao = false;
     let pedidoInventario;
     let modoVendas = null;
+    let iaDesligada = false;
     // Só compara a marca de invalidação quando a LEITURA deu certo: falha de
     // rede não pode virar "a marca mudou" e jogar fora o estado de todos os
     // ativos (o que custaria uma releitura por ativo por tick).
@@ -603,6 +623,10 @@ export async function iniciarOrquestrador() {
     try {
       const controle = await obterControle();
       travado = controle?.operacao_travada === true;
+      // Kill-switch da IA (V8.10), mesma carona: nenhuma leitura nova. Sem a
+      // chave em uso não há análise nem ordem decidida pela IA — só as saídas
+      // automáticas do Motor, que não consomem quota.
+      iaDesligada = controle?.ia_desligada === true;
       marcaInvalidacao = controle?.estado_invalidado_em ?? null;
       // "Rodar a supervisão agora", pedido pela dashboard. Pega carona nesta
       // leitura que já acontece todo tick — um doc próprio custaria mais 1.440
@@ -631,6 +655,14 @@ export async function iniciarOrquestrador() {
       log.aviso(travado ? '⛔ OPERAÇÃO TRAVADA pela dashboard — rodadas pausadas' : '▶ operação destravada — rodadas retomadas');
       avisouTravado = travado;
     }
+    if (iaDesligada !== avisouIaDesligada) {
+      log.aviso(
+        iaDesligada
+          ? '🧠 IA DESLIGADA pela dashboard — nenhuma análise nova; stop-loss e trava de lucro seguem ativos'
+          : '▶ IA religada — análises retomadas',
+      );
+      avisouIaDesligada = iaDesligada;
+    }
     // Estado apagado por fora (reset de dados): descarta a cópia em memória
     // ANTES da rodada, para o próximo ciclo reler do Firestore. Fica fora do
     // `if (!travado)` de propósito — o reset trava a operação justamente
@@ -656,7 +688,7 @@ export async function iniciarOrquestrador() {
 
     if (!travado) {
       try {
-        const resumo = await executarRodada({ modoVendas, forcarInventario });
+        const resumo = await executarRodada({ modoVendas, forcarInventario, iaDesligada });
         if (resumo.length > 0) {
           ultimaRodada = resumo.map((r) => `${r.plataforma}/${r.ativo}:${r.tipo}`).join(', ');
           log.info(`rodada concluída: ${ultimaRodada}`);
@@ -688,7 +720,7 @@ export async function iniciarOrquestrador() {
     // Heartbeat: registra a cada tick que o processo está vivo (dashboard).
     // Best-effort — falha de escrita nunca derruba o loop.
     try {
-      await salvarStatusBot(montarStatusBot({ ultimaRodada, travado, modoVendas }));
+      await salvarStatusBot(montarStatusBot({ ultimaRodada, travado, modoVendas, iaDesligada }));
     } catch (e) {
       log.aviso('falha ao gravar o heartbeat do bot (status_bot)', e);
     }
@@ -727,7 +759,7 @@ export async function iniciarOrquestrador() {
     if (primario && (pedidoSupervisao || Date.now() - supervisaoVerificadaEm >= SUPERVISAO_CHECK_MS)) {
       supervisaoVerificadaEm = Date.now();
       try {
-        await supervisionarSeVencido({ forcar: pedidoSupervisao, modoVendas });
+        await supervisionarSeVencido({ forcar: pedidoSupervisao, modoVendas, iaDesligada });
       } catch (e) {
         log.aviso('falha na supervisão semanal — a camada de prompt anterior continua valendo', e);
       }

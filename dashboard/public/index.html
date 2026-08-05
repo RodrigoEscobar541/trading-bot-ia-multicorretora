@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>IA Investidora — Painel</title>
   <!-- ?v= quebra o cache de 1h do hosting quando os arquivos mudam de era -->
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=7" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📈</text></svg>" />
 </head>
 <body>
@@ -57,6 +57,11 @@
         <div id="status-bot" class="status-bot" hidden></div>
         <div id="banner-travado" class="banner-travado" hidden></div>
         <div id="banner-modo-vendas" class="banner-modo-vendas" hidden></div>
+        <!-- Estados desligados por engano são o risco destes botões: um robô
+             mudo ou sem IA parece um robô normal. Por isso cada corte tem
+             banner próprio, e em cor diferente da parada de emergência. -->
+        <div id="banner-ia" class="banner-ia" hidden></div>
+        <div id="banner-avisos" class="banner-avisos" hidden></div>
         <section class="tiles">
           <article class="cartao tile tile-heroi">
             <span class="tile-rotulo">Patrimônio consolidado (em BRL)</span>
@@ -184,37 +189,56 @@
           <div id="telegram-status" class="telegram-status" hidden></div>
         </section>
 
+        <!-- Os quatro cortes ficam no MESMO cartão de propósito: em emergência
+             ninguém rola a página procurando qual botão era. Vão do mais amplo
+             (para tudo) ao mais específico (cala os avisos); o modo vendas fica
+             por último porque é o único que VENDE, e tem campos próprios. -->
         <section class="cartao cartao-controle">
-          <div class="controle-linha">
-            <div>
-              <h2 id="controle-titulo">Parada de emergência</h2>
+          <h2>Controles rápidos</h2>
+          <p class="texto-secundario">
+            Cada botão desliga uma parte do robô, e todos são reversíveis a qualquer momento.
+            O bot continua no ar em todos os casos.
+          </p>
+          <div class="grade-controles">
+            <article class="controle-item">
+              <button id="botao-travar" type="button" class="botao-perigo">⛔ Travar tudo</button>
               <p id="controle-descricao" class="texto-secundario">Interrompe TODA a operação do robô (análises e ordens, real e simulação). O bot continua no ar; nenhuma ordem é enviada até destravar.</p>
-            </div>
-            <button id="botao-travar" type="button" class="botao-perigo">⛔ Travar tudo</button>
-          </div>
-        </section>
+            </article>
 
-        <section class="cartao cartao-controle">
-          <div class="controle-linha">
-            <div>
-              <h2>Modo vendas (liquidação)</h2>
+            <article class="controle-item">
+              <button id="botao-ia" type="button" class="botao-perigo">🧠 Desligar IA</button>
+              <p id="ia-descricao" class="texto-secundario">
+                A chave da IA para de ser usada: nenhuma análise nova, nenhuma compra e nenhuma venda
+                decidida por ela. O stop-loss e a trava de lucro continuam protegendo as posições.
+              </p>
+            </article>
+
+            <article class="controle-item">
+              <button id="botao-avisos" type="button" class="botao-perigo">🔕 Desligar avisos</button>
+              <p id="avisos-descricao" class="texto-secundario">
+                O robô para de mandar mensagens no Telegram. Nada mais muda: ele continua analisando
+                e operando normalmente.
+              </p>
+            </article>
+
+            <article class="controle-item controle-item-largo">
+              <button id="botao-modo-vendas" type="button" class="botao-perigo">💰 Ligar modo vendas</button>
               <p id="mv-descricao" class="texto-secundario">
                 Encerra a carteira: o robô para de comprar e passa a procurar a melhor saída para as
                 posições abertas. A tolerância a prejuízo começa em 0% e abre ao longo da janela.
               </p>
-            </div>
-            <button id="botao-modo-vendas" type="button" class="botao-perigo">💰 Ligar modo vendas</button>
+              <form id="form-modo-vendas" class="renda-cdi-config" autocomplete="off">
+                <label class="campo-inline">Janela (dias)
+                  <input type="number" id="mv-dias" min="1" max="90" step="1" />
+                </label>
+                <label class="campo-inline">Prejuízo máximo (%)
+                  <input type="number" id="mv-perda" min="0" max="100" step="0.5" />
+                </label>
+                <button type="submit" class="botao-fantasma">Salvar</button>
+                <span id="mv-status" class="texto-secundario" role="status"></span>
+              </form>
+            </article>
           </div>
-          <form id="form-modo-vendas" class="renda-cdi-config" autocomplete="off">
-            <label class="campo-inline">Janela (dias)
-              <input type="number" id="mv-dias" min="1" max="90" step="1" />
-            </label>
-            <label class="campo-inline">Prejuízo máximo (%)
-              <input type="number" id="mv-perda" min="0" max="100" step="0.5" />
-            </label>
-            <button type="submit" class="botao-fantasma">Salvar</button>
-            <span id="mv-status" class="texto-secundario" role="status"></span>
-          </form>
         </section>
       </section>
 
@@ -344,13 +368,15 @@
 
         <section class="cartao">
           <h2>Posições abertas</h2>
-          <p class="texto-secundario">Cada compra é uma posição independente: a IA só vende posições com lucro líquido positivo.</p>
+          <p class="texto-secundario">Cada compra é uma posição independente: a IA só vende posições com lucro líquido positivo.
+            Cada uma tem dois chãos automáticos — o <strong>stop-loss</strong>, largo, que corta o prejuízo, e a
+            <strong>trava de lucro</strong>, estreita, que realiza o ganho quando o preço devolve parte do topo.</p>
           <div class="rolagem">
             <table id="tabela-posicoes" class="tabela-operacoes">
               <thead>
                 <tr>
                   <th>Abertura</th><th>Origem</th><th>Status</th><th>Quantidade</th>
-                  <th>Preço de compra</th><th>Preço mín. p/ lucrar</th><th>Stop-loss</th><th>Lucro se vender agora</th>
+                  <th>Preço de compra</th><th>Preço mín. p/ lucrar</th><th>Stop-loss</th><th>Trava de lucro</th><th>Lucro se vender agora</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -366,7 +392,8 @@
             <span><span class="chave-marca chave-compra">▲</span> compra</span>
             <span><span class="chave-marca chave-venda">▼</span> venda (IA)</span>
             <span><span class="chave-marca chave-venda-stop">▼</span> venda por stop-loss (Motor)</span>
-            <span class="texto-secundario">as operações executadas aparecem sobre a linha do preço — a venda por stop-loss é a única que pode sair no prejuízo</span>
+            <span><span class="chave-marca chave-venda-trava">▼</span> venda pela trava de lucro (Motor)</span>
+            <span class="texto-secundario">as operações executadas aparecem sobre a linha do preço — a venda por stop-loss é a única que pode sair no prejuízo; a trava de lucro é o oposto dela, e só vende ganhando</span>
             <span class="texto-secundario">o eixo do tempo pula os períodos sem negociação (noite, fim de semana) — só o que teve preço ocupa espaço, então a distância horizontal NÃO é proporcional ao tempo. As linhas tracejadas marcam a virada do dia, e a pequena interrupção antes de cada uma é o período fechado.</span>
           </p>
           <div id="grafico-preco" class="grafico"></div>
@@ -457,6 +484,12 @@
                 </label>
                 <label>Folga do stop-loss (%) — distância MÍNIMA entre o preço e o chão, e a distância em que o robô sobe o chão sozinho quando a posição está em lucro. Chão que a IA peça mais perto que isso é recusado
                   <input type="number" id="cfg-stop-trailing" min="0.1" max="50" step="0.1" required />
+                </label>
+                <label>Trava de lucro — gatilho (%) — quanto a posição precisa subir acima do ponto de empate para o robô armar a trava. 0 desliga a trava neste ativo
+                  <input type="number" id="cfg-trava-gatilho" min="0" max="50" step="0.1" required />
+                </label>
+                <label>Trava de lucro — devolução (%) — quanto do TOPO da posição o robô aceita devolver antes de vender e realizar o lucro. Menor = realiza mais cedo e mais vezes
+                  <input type="number" id="cfg-trava-devolucao" min="0" max="50" step="0.1" required />
                 </label>
                 <label>Ordem mínima (valor na moeda)
                   <input type="number" id="cfg-min-valor" min="0" step="0.01" required />
@@ -841,6 +874,6 @@
     </main>
   </div>
 
-  <script type="module" src="app.js?v=12"></script>
+  <script type="module" src="app.js?v=13"></script>
 </body>
 </html>

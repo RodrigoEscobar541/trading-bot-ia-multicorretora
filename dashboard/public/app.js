@@ -33,6 +33,28 @@ const UID_AUTORIZADO = 'COLE_AQUI_O_UID_DO_DONO';
 
 const $ = (id) => document.getElementById(id);
 
+/**
+ * Esconde/mostra uma seção pelo id, tolerando que ela NÃO EXISTA.
+ *
+ * Existe por causa de um incidente real (2026-08-05): o Firebase Hosting servia
+ * o HTML com cache de 1 h e o JS sem cache, então um deploy podia entregar o
+ * script NOVO rodando sobre a página VELHA. O script tentava esconder uma seção
+ * que aquele HTML ainda não tinha, dava TypeError no meio da navegação, e a
+ * tela anterior ficava na frente do dono — com aparência de bug de conteúdo,
+ * não de cache. O cabeçalho foi corrigido no `firebase.json`; isto aqui é o
+ * cinto de segurança, para a próxima divergência degradar em vez de derrubar.
+ */
+const mostrarSecao = (id, visivel) => {
+  const el = $(id);
+  if (el) el.hidden = !visivel;
+};
+
+/** `addEventListener` que ignora elemento ausente — mesma razão de `mostrarSecao`. */
+const aoEvento = (id, evento, fn) => {
+  const el = $(id);
+  if (el) el.addEventListener(evento, fn);
+};
+
 // ------------------------------------------------------------- formatadores
 // Cada plataforma tem a SUA moeda (MB = BRL, TT = USD): os formatadores são
 // criados sob demanda por moeda; `moedaTela` acompanha a plataforma da rota.
@@ -210,13 +232,17 @@ function assinarGlobais() {
       renderStatusBot();
       if (rota.tipo === 'geral') {
         renderControle();
+        renderControleIA(); // o bot confirma o kill-switch da IA pelo heartbeat
         renderTelegramStatus(); // o resultado do último envio vem no heartbeat
       }
     }),
-    // Parada de emergência (V6.2): estado do botão "travar tudo".
+    // Parada de emergência (V6.2) + kill-switch da IA (V8.10): o mesmo doc.
     onSnapshot(doc(db, 'global', 'controle'), (snap) => {
       controle = snap.data() ?? null;
-      if (rota.tipo === 'geral') renderControle();
+      if (rota.tipo === 'geral') {
+        renderControle();
+        renderControleIA();
+      }
     }),
     // Câmbio USD→BRL (V6.2): consolida o patrimônio da visão geral em BRL.
     onSnapshot(doc(db, 'global', 'cambio'), (snap) => {
@@ -323,12 +349,12 @@ function aplicarRota() {
     rota = { tipo: 'geral' };
   }
 
-  $('tela-geral').hidden = rota.tipo !== 'geral';
-  $('tela-ativo').hidden = rota.tipo !== 'ativo';
-  $('tela-plataforma').hidden = rota.tipo !== 'plataforma';
-  $('tela-regras').hidden = rota.tipo !== 'regras';
-  $('tela-supervisao').hidden = rota.tipo !== 'supervisao';
-  $('tela-steam').hidden = rota.tipo !== 'steam';
+  mostrarSecao('tela-geral', rota.tipo === 'geral');
+  mostrarSecao('tela-ativo', rota.tipo === 'ativo');
+  mostrarSecao('tela-plataforma', rota.tipo === 'plataforma');
+  mostrarSecao('tela-regras', rota.tipo === 'regras');
+  mostrarSecao('tela-supervisao', rota.tipo === 'supervisao');
+  mostrarSecao('tela-steam', rota.tipo === 'steam');
   fecharMenuMobile();
   assinarTela();
   renderMenu();
@@ -649,6 +675,110 @@ $('botao-travar').addEventListener('click', async () => {
   }
 });
 
+// ------------------------------------------------- kill-switch da IA (V8.10)
+// Grava global/controle.ia_desligada — o MESMO doc da parada de emergência, que
+// o bot já lê fresco a cada minuto (nenhuma leitura nova). Desligado, o ciclo do
+// ativo roda inteiro MENOS a chamada à IA: o stop-loss e a trava de lucro são do
+// Motor, não gastam quota e continuam protegendo as posições. Para congelar tudo
+// o botão é o outro.
+function renderControleIA() {
+  const desligada = controle?.ia_desligada === true;
+  const botao = $('botao-ia');
+  if (botao) {
+    botao.textContent = desligada ? '▶ Religar IA' : '🧠 Desligar IA';
+    botao.className = desligada ? 'botao-primario' : 'botao-perigo';
+  }
+  const desc = $('ia-descricao');
+  if (desc) {
+    desc.textContent = desligada
+      ? 'A IA está DESLIGADA: nenhuma análise nova e nenhuma ordem decidida por ela. O stop-loss e a '
+        + 'trava de lucro continuam ativos, e a supervisão semanal está pausada.'
+      : 'A chave da IA para de ser usada: nenhuma análise nova, nenhuma compra e nenhuma venda '
+        + 'decidida por ela. O stop-loss e a trava de lucro continuam protegendo as posições.';
+  }
+  const banner = $('banner-ia');
+  if (banner) {
+    banner.hidden = !desligada;
+    if (desligada) {
+      // Mesma lógica do "travar tudo": o flag escrito não prova que o bot viu.
+      const confirmado = statusBot?.ia_desligada === true;
+      const desde = controle?.ia_desligada_em ? ` desde ${dataHora(controle.ia_desligada_em)}` : '';
+      banner.textContent = `🧠 IA DESLIGADA${desde} — ${confirmado ? 'o bot confirmou' : 'aguardando o bot confirmar…'}`
+        + ' · stop-loss e trava de lucro seguem ativos';
+    }
+  }
+}
+
+$('botao-ia').addEventListener('click', async () => {
+  const desligada = controle?.ia_desligada === true;
+  const msg = desligada
+    ? 'Religar a IA e voltar a analisar normalmente?'
+    : 'DESLIGAR a IA?\n\nO robô para de analisar e não abre nem fecha posição por decisão dela.\n\n'
+      + 'O stop-loss e a trava de lucro continuam funcionando — as posições abertas seguem protegidas.';
+  if (!confirm(msg)) return;
+  try {
+    await setDoc(
+      doc(db, 'global', 'controle'),
+      { ia_desligada: !desligada, ia_desligada_em: new Date().toISOString(), origem: 'dashboard' },
+      { merge: true },
+    );
+  } catch (e) {
+    alert(`Falha ao ${desligada ? 'religar' : 'desligar'} a IA: ${e.code ?? e.message}`);
+  }
+});
+
+// ------------------------------------------- corte rápido dos avisos (V8.10)
+// É o MESMO interruptor do card "Avisos no Telegram" (global/telegram.ativo),
+// só que ao alcance da mão junto dos outros cortes. Nenhum toggle de evento é
+// tocado: religar devolve exatamente a configuração de antes. Vale em até 5 min
+// — a config do Telegram é lida pelo catálogo cacheado, e furar esse cache por
+// um botão custaria leitura no tick de 1 minuto.
+function renderControleAvisos() {
+  const configurado = telegramSalvo?.token_configurado === true && Boolean(telegramSalvo?.chat_id);
+  const desligados = !configurado || telegramSalvo?.ativo === false;
+  const botao = $('botao-avisos');
+  if (botao) {
+    botao.disabled = !configurado;
+    botao.textContent = desligados ? '🔔 Religar avisos' : '🔕 Desligar avisos';
+    botao.className = desligados ? 'botao-primario' : 'botao-perigo';
+  }
+  const desc = $('avisos-descricao');
+  if (desc) {
+    desc.textContent = !configurado
+      ? 'Configure o token e o chat id no card "Avisos no Telegram" abaixo para poder usar este botão.'
+      : desligados
+        ? 'Os avisos estão DESLIGADOS: o robô continua analisando e operando, mas não te manda nada. '
+          + 'Suas escolhas de quais eventos avisar foram preservadas.'
+        : 'O robô para de mandar mensagens no Telegram. Nada mais muda: ele continua analisando e '
+          + 'operando normalmente. Vale em até 5 minutos.';
+  }
+  const banner = $('banner-avisos');
+  if (banner) {
+    banner.hidden = !(configurado && desligados);
+    if (configurado && desligados) {
+      banner.textContent = '🔕 Avisos do Telegram desligados — o robô está operando em silêncio.';
+    }
+  }
+}
+
+$('botao-avisos').addEventListener('click', async () => {
+  const desligados = telegramSalvo?.ativo === false;
+  const msg = desligados
+    ? 'Religar os avisos no Telegram?'
+    : 'DESLIGAR os avisos no Telegram?\n\nO robô continua analisando e operando — você é que deixa de '
+      + 'ser avisado, inclusive sobre problemas.\n\nVale em até 5 minutos.';
+  if (!confirm(msg)) return;
+  try {
+    await setDoc(
+      doc(db, 'global', 'telegram'),
+      { ativo: desligados, atualizado_em: new Date().toISOString() },
+      { merge: true },
+    );
+  } catch (e) {
+    alert(`Falha ao ${desligados ? 'religar' : 'desligar'} os avisos: ${e.code ?? e.message}`);
+  }
+});
+
 // ------------------------------------------------------ modo vendas (V8)
 // Liquidação da carteira: grava global/controle.modo_vendas. Ligado, o Motor
 // bloqueia compras e passa a aceitar venda no prejuízo até a tolerância do DIA,
@@ -753,6 +883,8 @@ $('form-modo-vendas').addEventListener('submit', async (ev) => {
 function renderGeral() {
   renderStatusBot();
   renderControle();
+  renderControleIA();
+  renderControleAvisos();
   renderModoVendas();
   const corpo = $('tabela-geral-ativos').tBodies[0];
   corpo.textContent = '';
@@ -1163,6 +1295,9 @@ function renderTelegramStatus() {
 function renderTelegram(dados) {
   telegramSalvo = dados ?? null;
   renderTelegramStatus();
+  // O botão "desligar avisos" dos controles rápidos é o MESMO interruptor deste
+  // card — os dois têm de contar a mesma história a cada snapshot.
+  renderControleAvisos();
   // Resumo no cabeçalho recolhido: com o painel fechado, ainda dá para saber
   // se os avisos estão ligados sem abrir nada.
   const resumo = $('telegram-resumo');
@@ -1440,7 +1575,9 @@ function renderGraficos() {
         ? 'VENDA_STOP'
         : op.tipo === 'VENDA' && op.origem_decisao === 'ia_modo_vendas'
           ? 'VENDA_LIQ'
-          : op.tipo,
+          : op.tipo === 'VENDA' && op.origem_decisao === 'motor_trava_lucro'
+            ? 'VENDA_TRAVA'
+            : op.tipo,
     }));
 
   desenharLinha($('grafico-preco'), pontosPreco, 'var(--serie-preco)', marcadores);
@@ -1485,6 +1622,10 @@ const MARCA_OPERACAO = {
   // Liquidação (V8): a outra saída que pode sair no vermelho. Cor própria
   // porque misturá-la com a venda normal esconderia o prejuízo aceito.
   VENDA_LIQ: { cor: 'var(--marca-venda-liquidacao)', rotulo: 'venda na liquidação (modo vendas)' },
+  // Trava de lucro (V8.11): a saída que REALIZA — o oposto do stop, e por isso
+  // cor própria. Sem separá-la, "o Motor vendeu" viraria uma coisa só no
+  // gráfico e ninguém saberia se o robô se protegeu ou se ganhou dinheiro.
+  VENDA_TRAVA: { cor: 'var(--marca-venda-trava)', rotulo: 'venda pela trava de lucro (Motor)' },
 };
 
 // Quantas vezes a cadência NORMAL do ativo um buraco precisa ter para valer
@@ -1789,6 +1930,11 @@ function renderOperacoes() {
     if (op.tipo === 'VENDA' && op.origem_decisao === 'motor_stop_loss') {
       celTipo.textContent = 'VENDA (stop-loss)';
       celTipo.className = 'venda-stop';
+    } else if (op.tipo === 'VENDA' && op.origem_decisao === 'motor_trava_lucro') {
+      // Trava de lucro (V8.11): o Motor realizou o ganho sozinho. Rotular junto
+      // com a venda da IA esconderia quem está de fato realizando lucro aqui.
+      celTipo.textContent = 'VENDA (trava de lucro)';
+      celTipo.className = 'venda-trava';
     } else if (op.tipo === 'VENDA' && op.origem_decisao === 'ia_modo_vendas') {
       // Liquidação (V8): a IA decidiu, mas com prejuízo autorizado pelo modo —
       // e o dia da janela explica quanto de prejuízo era aceito ali.
@@ -1879,6 +2025,20 @@ function renderPosicoes() {
       celStop.textContent = '—';
       celStop.title = 'sem stop-loss — esta posição só é vendida com lucro';
     }
+    // Trava de lucro (V8.11): o segundo chão, o que REALIZA. "—" = ainda não
+    // armou (o lote não subiu o bastante), e nesse caso ninguém vai realizar
+    // esse lucro sozinho — é a faixa em que a decisão da IA vale mais.
+    const celTrava = linha.insertCell();
+    if (p.trava_lucro != null) {
+      celTrava.textContent = dinheiro(p.trava_lucro);
+      celTrava.className = 'venda-trava';
+      celTrava.title = p.preco_maximo != null
+        ? `o robô vende aqui e realiza o lucro. Topo da posição: ${dinheiro(p.preco_maximo)}`
+        : 'o robô vende aqui e realiza o lucro';
+    } else {
+      celTrava.textContent = '—';
+      celTrava.title = 'a trava ainda não armou: o lote não subiu o bastante acima do preço mínimo para lucrar';
+    }
     const celLucro = linha.insertCell();
     celLucro.textContent = dinheiro(p.lucro_se_vender_agora);
     if (p.lucro_se_vender_agora != null) {
@@ -1908,7 +2068,9 @@ function renderConfigAtivo() {
   $('cfg-limite-perda').value = config.limite_perda_diaria_percentual ?? 3;
   $('cfg-orcamento').value = config.orcamento_percentual ?? 100;
   $('cfg-stop-distancia').value = config.stop_loss_max_distancia_percentual ?? 15;
-  $('cfg-stop-trailing').value = config.stop_loss_trailing_percentual ?? 3;
+  $('cfg-stop-trailing').value = config.stop_loss_trailing_percentual ?? 2;
+  $('cfg-trava-gatilho').value = config.trava_lucro_gatilho_percentual ?? 1;
+  $('cfg-trava-devolucao').value = config.trava_lucro_devolucao_percentual ?? 0.8;
   $('cfg-min-valor').value = config.minimo_ordem_valor ?? 10;
   $('cfg-min-qtd').value = config.minimo_ordem_quantidade ?? 0.00001;
   renderSomaOrcamento(); // agora com o valor do campo já preenchido
@@ -2377,6 +2539,7 @@ function steamItemAnalisado(id) {
 }
 
 function renderSteam() {
+  if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
   const inv = telaDados.inventario ?? {};
   const itens = Array.isArray(inv.itens) ? inv.itens : [];
   const comPreco = itens.filter((i) => Number.isFinite(i.valor_total));
@@ -2544,11 +2707,12 @@ function steamIntervalos() {
 
 let steamConfigEditando = false;
 for (const id of ['steam-id64', 'steam-int-analise', 'steam-int-precos', 'steam-int-noticias']) {
-  $(id).addEventListener('focus', () => { steamConfigEditando = true; });
-  $(id).addEventListener('blur', () => { steamConfigEditando = false; });
+  aoEvento(id, 'focus', () => { steamConfigEditando = true; });
+  aoEvento(id, 'blur', () => { steamConfigEditando = false; });
 }
 
 function renderSteamConfig() {
+  if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
   if (steamConfigEditando) return; // não sobrescrever o que o dono está digitando
   const p = plataformas.get(PLATAFORMA_STEAM)?.dados ?? {};
   const i = { ...STEAM_INTERVALOS_PADRAO, ...(p.intervalos ?? {}) };
@@ -2558,7 +2722,7 @@ function renderSteamConfig() {
   $('steam-int-noticias').value = i.noticias_minutos;
 }
 
-$('form-steam-config').addEventListener('submit', async (ev) => {
+aoEvento('form-steam-config', 'submit', async (ev) => {
   ev.preventDefault();
   const status = $('steam-config-status');
   const id64 = $('steam-id64').value.trim();
@@ -2583,7 +2747,7 @@ $('form-steam-config').addEventListener('submit', async (ev) => {
 // "Atualizar agora": grava uma MARCA no doc que o bot já lê a cada minuto
 // (global/controle), a mesma carona do "rodar supervisão agora". Nenhuma
 // leitura nova no tick, e o bot atende no próximo minuto.
-$('btn-steam-atualizar').addEventListener('click', async () => {
+aoEvento('btn-steam-atualizar', 'click', async () => {
   const status = $('steam-status');
   status.textContent = 'pedindo ao bot…';
   try {
@@ -2600,6 +2764,7 @@ $('btn-steam-atualizar').addEventListener('click', async () => {
  * separados de propósito, para um nunca apagar o outro no merge.
  */
 function renderSteamAlertas() {
+  if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
   const itens = Array.isArray(telaDados.inventario?.itens) ? telaDados.inventario.itens : [];
   const alvos = telaDados.alertas?.itens ?? {};
 
@@ -2664,7 +2829,7 @@ async function salvarAlertaSteam(id, abaixo, acima) {
   }
 }
 
-$('form-steam-alerta').addEventListener('submit', async (ev) => {
+aoEvento('form-steam-alerta', 'submit', async (ev) => {
   ev.preventDefault();
   const id = $('steam-alerta-item').value;
   if (!id) {
@@ -2687,6 +2852,7 @@ $('form-steam-alerta').addEventListener('submit', async (ev) => {
  * é consultada pelo navegador em nenhum momento.
  */
 function renderSteamNoticias() {
+  if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
   const alvo = $('steam-noticias');
   alvo.textContent = '';
   const itens = Array.isArray(telaDados.noticias?.itens) ? telaDados.noticias.itens : [];
@@ -2727,15 +2893,16 @@ function renderSteamNoticias() {
 }
 
 let steamPromptEditando = false;
-$('texto-steam-prompt').addEventListener('focus', () => { steamPromptEditando = true; });
-$('texto-steam-prompt').addEventListener('blur', () => { steamPromptEditando = false; });
+aoEvento('texto-steam-prompt', 'focus', () => { steamPromptEditando = true; });
+aoEvento('texto-steam-prompt', 'blur', () => { steamPromptEditando = false; });
 
 function renderSteamPrompt() {
+  if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
   $('steam-prompt-versao').textContent = telaDados.steamPrompt?.versao ? `(versão ${telaDados.steamPrompt.versao})` : '';
   if (!steamPromptEditando) $('texto-steam-prompt').value = telaDados.steamPrompt?.conteudo ?? '';
 }
 
-$('form-steam-prompt').addEventListener('submit', async (ev) => {
+aoEvento('form-steam-prompt', 'submit', async (ev) => {
   ev.preventDefault();
   const status = $('steam-prompt-status');
   status.textContent = 'salvando…';

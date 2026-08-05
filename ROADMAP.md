@@ -370,7 +370,7 @@ Quatro melhorias pedidas, cada uma independente:
 ## ✅ V6.4 — Comparativo × CDI soma o lucro multi-moeda em BRL (2026-07-22)
 
 O card "Rendimento × 106% do CDI" só comparava o lucro em **reais** com a Selic:
-uma venda lucrativa em dólar (na Tastytrade) aparecia no
+uma venda lucrativa em dólar na Tastytrade aparecia no
 cabeçalho por moeda, mas ficava **fora** do total comparado com o CDI. Como o
 câmbio USD→BRL já existia (`global/cambio`, V6.2), o comparativo passou a
 converter o lucro de cada moeda estrangeira para BRL e somá-lo ao total:
@@ -463,10 +463,10 @@ prioridade 2 do bloco 3).
   força contra realizar cedo. **Consequência não prevista:** a única porta de
   saída na prática virou o stop-loss — que, por construção, só abre num preço
   pior. PBR: o lucro no pico (23/07) caiu a ~60% dele no dia seguinte, e o stop
-  em 18,50 o levaria a ~40% do pico.
+  em 18,50 disparar.
 - Fechamentos: **antes da V6.6**, 15 posições, todas por decisão da IA, todas no
-  lucro. **Depois da V6.6**, 7 posições, todas por stop-loss, todas no prejuízo,
-  nenhuma com `fechada_por: 'lucro'`.
+  lucro. **Depois da V6.6**, 7 posições, todas por
+  stop-loss, todas no prejuízo, nenhuma com `fechada_por: 'lucro'`.
   Ressalva: é 1 dia, em dia de queda em cripto, e tudo em simulação — stop
   disparando em queda é o stop funcionando. Decisão: **manter o stop como está**
   e medir mais dias.
@@ -486,7 +486,7 @@ prioridade 2 do bloco 3).
   atual; fora dessa faixa nada muda (chão bem abaixo da entrada é proteção
   legítima). Mesma filosofia do truncamento: ajusta conservador, nunca rejeita.
   O ajuste aplicado carrega `elevado_breakeven`. Verificado contra o caso real:
-  o lote que saía no vermelho passa a sair no zero a zero.
+  de um prejuízo pequeno para zero.
 - `regras_gerais.md` e `promptBase.md` corrigidos: risco zero é o
   `preco_minimo_venda_lucrativa`, não o preço de entrada.
 
@@ -671,14 +671,14 @@ Posições fechadas
   stop-loss (Motor): 7 — 0 no lucro, 7 no prejuízo
   realização (IA):  14 — 14 no lucro, 0 no prejuízo
 Resultado realizado
-  negativo em BRL   (taxas maiores que o próprio prejuízo)
-  positivo em USD   (taxas irrelevantes)
+  -39,88 BRL (taxas: 82,69 BRL)
+  +66,64 USD (taxas:  0,29 USD)
 ```
 
 Duas leituras que só apareceram por medir:
 
 1. **As taxas em reais foram MAIORES que o prejuízo líquido** — cerca de 2× ele.
-   Sem custo de corretagem a semana teria fechado no POSITIVO em reais. O
+   Sem custo de corretagem a semana teria fechado POSITIVA em reais. O
    volume de giro no MB está caro demais para o tamanho dos movimentos
    capturados — é candidato a investigação própria.
 2. **A dicotomia continua nítida**: tudo que a IA decidiu vender saiu no lucro
@@ -1082,10 +1082,7 @@ padrão da lição da V7.2: *dado prometido e não enviado*.
 
 ### O retrato de 2026-07-25 (23 lotes fechados, medidos à mão no banco)
 
-Valores normalizados pelo GANHO MÉDIO (= 1,00×), que é o suficiente para o
-argumento — o que importa aqui são as proporções, não o tamanho da carteira.
-
-| | BRL, em múltiplos do ganho médio |
+| | BRL |
 | :--- | :--- |
 | Ganhos | 15 · média **1,00×** · maior **2,9×** |
 | Perdas | 7 · média **3,1×** · pior **13,5×** |
@@ -1154,9 +1151,9 @@ contamina justamente a medição que motivou o reset.
 
 **Também nesta leva:** a carteira da TORO foi limpa. A `carteira_manual` (a que
 vale) estava correta desde sempre; o lixo eram duas fotos de 2026-07-21T13:52 —
-quatro minutos antes de o dono corrigir os saldos à mão — que guardaram um caixa
-NEGATIVO e um ticker fantasma, nascido de uma letra trocada na digitação. As duas
-fotos e o `patrimonio_inicio_dia.simulacao` negativo foram apagados; refazem-se
+quatro minutos antes de o dono corrigir os saldos à mão — que guardaram caixa de
+NEGATIVO e um ticker fantasma, nascido de uma letra trocada na digitação. As duas fotos
+e o `patrimonio_inicio_dia.simulacao` negativo foram apagados; refazem-se
 sozinhos a partir da carteira correta.
 
 ## ✅ V8.3 — O contrato entre quem escreve e quem mede (2026-07-26)
@@ -1205,8 +1202,7 @@ Aplicado — o que era pequeno e de baixo risco:
 
 - **Breakeven da tela ≠ breakeven do bot.** A coluna "preço mínimo de venda"
   usava a taxa de compra da CONFIG; o Motor usa a taxa que a corretora de fato
-  cobrou naquele lote (§10.4). Num lote de BTC os dois números divergiam o
-  equivalente a mais de 1% da posição.
+  cobrou naquele lote (§10.4). Divergiam de forma relevante num lote de BTC.
   Corrigido e conferido contra as 4 posições reais de produção: bate exatamente.
 - **Log em reais para ativo em dólar.** `formatarBRL`, herdado da V1 (um ativo,
   uma moeda), fazia a compra de uma ação americana sair no log com "R$" na frente.
@@ -1294,8 +1290,8 @@ rodar o reset, registradas para não se perderem:
   medição morre da mesma causa que a primeira.
 - **O backup do reset não tem restauração.** O JSON é gravado e nada o devolve.
   Tudo bem se o papel dele é consulta; o risco é presumir rollback que não existe.
-- Um ativo da TORO está DESLIGADO com uma posição real aberta: nenhum ciclo roda,
-  logo o stop dela não é conferido.
+- TORO/SPCX34 está DESLIGADO com uma posição real aberta: nenhum ciclo roda, logo
+  o stop dela não é conferido.
 
 ## ✅ V8.6 — O RECOMEÇO: ensaio do modo vendas e reset executado (2026-07-27)
 
@@ -1309,17 +1305,17 @@ a V8 antes que os dados voltassem a valer. Funcionou: as posições de MB, BN e 
 foram liquidadas e o parque chegou ao reset com **zero lote aberto** fora da
 Toro. Custo financeiro nenhum — tudo em simulação, e no dia 1 a tolerância a
 prejuízo é zero, então só saiu o que já estava no lucro. As duas posições reais
-da Toro (dois FIIs da B3) continuaram abertas, como manda o desenho: o robô não
+da Toro (MXRF11 e WRLD11) continuaram abertas, como manda o desenho: o robô não
 executa em plataforma assistida.
 
 **2. Um susto que não era defeito.** O dono estranhou que o total do comparativo
 × CDI parecia ignorar o lucro em dólar. Conferido no banco: prejuízo em BRL +
-lucro em USD × a cotação do dia dava exatamente o número da tela. A V6.4 está
-certa; o que confunde é a linha de cima mostrar o lucro SEPARADO por moeda logo
-acima do total consolidado. Fica registrado para não virar investigação de novo.
+lucro em USD × a cotação bate exatamente com o número da tela. A V6.4 está certa;
+o que confunde é a linha de cima mostrar o lucro SEPARADO por moeda logo acima
+do total consolidado. Fica registrado para não virar investigação de novo.
 
 **3. O reset, executado.** `scripts/resetar-dados.mjs --executar --caixa
-MB=…,BN=…,TT=…`. **8.866 documentos apagados**, backup em JSON gravado
+MB=2000,BN=2000,TT=400`. **8.866 documentos apagados**, backup em JSON gravado
 antes, Toro inteira preservada (posições reais + caixa manual), prompts
 preservados. O bot confirmou a parada pelo heartbeat antes de qualquer escrita —
 a trava da V8.5 fez o trabalho dela na primeira vez que foi usada de verdade.
@@ -1486,29 +1482,153 @@ significam que o relatório não vai conseguir separar o efeito da folga do efei
 do fatiamento. Aceitável porque as duas entram ANTES da janela reabrir — é um
 sistema novo sendo medido, não uma mudança no meio da amostra.
 
-
 ## ✅ V8.9 — Cópia pública para portfólio (2026-08-03)
 
-**Este repositório é o resultado desta versão.** O projeto original é privado e
-continua assim; aqui está uma cópia com o código e a documentação de engenharia
-completos, sem nada que aponte para a operação real.
+Fecha o item "estudar deixar o repo público ou criar outro repo para mostrar o
+projeto no GitHub", que estava aberto desde a lista de pendências avulsas
+(Anexo A).
 
-- **Cópia, não abertura.** Abrir o repositório original exigiria reescrever
-  histórico. Esta cópia parte de um `git init` próprio — os commits de lá não
-  vêm para cá, de propósito, porque as mensagens de commit citam números de
-  produção.
-- **O que não veio junto**: credenciais e identificadores do ambiente (que
-  viraram placeholders), valores em dinheiro que descrevem a carteira real (onde
-  o número sustentava um argumento, ele virou PROPORÇÃO — o raciocínio continua
-  auditável sem expor o tamanho da conta) e os tickers que identificam posições
-  reais. Exemplo redondo de didática ficou.
-- **Pré-requisito que já estava pago**: a V7.1 tirou os segredos do alcance do
+**A decisão: cópia, não abertura.** Este repositório continua PRIVADO. Nasceu o
+`RodrigoEscobar541/trading-bot-ia-multicorretora` — público, com o código e a
+documentação de engenharia completos, e sem nada que aponte para a operação real.
+Abrir este aqui exigiria reescrever histórico; a cópia parte de um `git init`
+próprio, então **os commits daqui não vão para lá** — de propósito, porque as
+mensagens de commit citam números de produção.
+
+- **O que sai da cópia**, em quatro famílias: arquivos pessoais e scripts de
+  diagnóstico de uso único; valor em dinheiro que descreva a carteira real
+  (~30 pontos só no ROADMAP — onde o número sustenta um argumento, ele vira
+  PROPORÇÃO, para o raciocínio continuar auditável); ticker que identifique
+  posição real; e os identificadores do ambiente, que viram placeholder
+  (config do Firebase, id do projeto, UID do dono, workflow de deploy).
+- **O que ela tem a mais**: `README.md` de vitrine, `INSTALACAO.md` (o que era o
+  README daqui) e `LICENSE` (MIT, com aviso de que o software manda ordem de
+  verdade).
+- **Ela não se atualiza sozinha.** Mudança grande tem de ser levada à mão, e por
+  isso a §17.1 do CLAUDE.md virou uma checagem de cinco perguntas que **quem mexe
+  no código roda ao fechar o trabalho** — o dono pediu explicitamente para não ter
+  de lembrar disso. Um "sim" já obriga a avisar; publicar nunca é automático.
+- Pré-requisito que já estava pago: a V7.1 tirou os segredos do alcance do
   navegador, e nenhum segredo jamais esteve versionado (`.env` sempre ignorado,
   `.env.example` só com nomes — conferido também no histórico). É isso que
   permite publicar a árvore atual sem reescrever nada.
-- **Faxina no mesmo dia**: os 6 arquivos de `src/indicadores/` estavam salvos em
-  CP1252 e os acentos dos comentários voltaram — pendência que a V8.4 havia
-  registrado.
+- **Faxina no mesmo dia** (commit `fe29361`): os 6 arquivos de `src/indicadores/`
+  estavam salvos em CP1252 e os acentos dos comentários voltaram — pendência que
+  a V8.4 tinha deixado registrada.
+
+---
+
+## ✅ V8.11 — A trava de lucro: a V8.8 tinha resolvido metade (2026-08-05)
+
+Fecha a prioridade 2 ("alvo mínimo / trava de realização precoce", a antiga
+"V6.7"), que estava aberta desde 2026-07-24. Veio de uma pergunta do dono sobre
+UM lote: ele subiu ~4,3% acima da compra e voltou a ficar abaixo dela, e o
+stop-loss "não segurou". Ele estava certo, e o mesmo estava acontecendo nos
+outros ativos.
+
+**O diagnóstico, em três números.** Nos 23 lotes fechados desde o reset: topo
+mediano do lote **+1,09%**, maior topo de todos **+3,07%**. A §10.7 do CLAUDE.md
+já dizia, desde a V8.8, que com folga de 5% o chão do trailing só começa a travar
+lucro acima de **+5,3%** (TT) a **+6,7%** (MB). O que ninguém tinha feito era
+comparar os dois números. **Zero lotes chegaram lá.**
+
+Ou seja: a trava de lucro do sistema não estava apertada demais — **era
+inalcançável**. O trailing rodava a cada ciclo, subia o chão, gravava no banco e
+"funcionava"; só que o chão nunca passava do preço de compra. Todo lote vencedor
+devolvia o movimento inteiro e morria no stop. Placar da janela: **17 saídas por stop contra 6 vendas
+no lucro**, com o prejuízo somado das primeiras valendo mais de 3× o ganho das
+segundas. E a IA vendia 7 vezes em 1.485
+decisões — 0,5%.
+
+**A causa raiz é a mesma classe de erro da V8.1 e da V8.5: um número fazendo
+dois trabalhos opostos.** O chão que protege do prejuízo tem de ser LARGO, para
+aguentar o ruído do dia. O que realiza lucro tem de ser ESTREITO, menor que o
+movimento típico. A V8.8 fundiu os dois na folga — corretamente, para o problema
+que ela estava resolvendo — e escolheu o valor largo. O lado do lucro desapareceu
+sem que nada acusasse, porque o mecanismo continuava rodando.
+
+**A solução: dois chãos por posição, com papéis explícitos.**
+
+| | `stop_loss` | `trava_lucro` (novo) |
+| :--- | :--- | :--- |
+| Distância | LARGA (a folga, §10.7) | ESTREITA (0,8% do pico) |
+| Existe onde | em qualquer preço | **só acima do breakeven do lote** |
+| Pode vender no prejuízo | sim (exceção da §4) | **nunca** |
+| Quando arma | na compra | quando o PICO passa de breakeven + 1% |
+
+- **Não é uma terceira exceção à regra imutável 4.** A trava nunca desce abaixo
+  do breakeven, `posicoesComTravaFurada` descarta lote sem lucro positivo, e a
+  venda é montada como decisão sintética que passa pelo **`avaliar()` normal** —
+  o mesmo caminho que recusa lote sem lucro. Nenhuma via de venda nova foi
+  criada; se a conta da trava estiver errada, o pior desfecho é uma venda que não
+  acontece.
+- **Quem arma é o PICO, não o preço de agora.** Armada, ela não desarma quando o
+  preço recua — que é exatamente quando ela precisa estar de pé.
+- **O piso no breakeven é o que dispensa a folga mínima aqui.** A folga existe
+  para o chão não ser furado por ruído NO VERMELHO; na trava, o pior que o ruído
+  faz é realizar um lucro menor que o possível. Trocar prejuízo por lucro pequeno
+  é o negócio que se quer fazer.
+- **A folga caiu de 5% para 2%** em todos os 12 ativos. Com a trava cuidando da
+  realização, a folga voltou a ter um trabalho só. Os dois números são
+  independentes de propósito — dá para ajustar um sem estragar o outro.
+- **Prompt (`regras_gerais.md` §4.1 reescrita).** A IA passou a receber
+  `trava_lucro` e `preco_maximo` por lote e os dois percentuais em
+  `configuracoes`. E ganhou a faixa que é dela: **lote em lucro com
+  `trava_lucro: null`** — ganho pequeno demais para a trava, chão de proteção
+  ainda lá embaixo, nenhum automático reagindo. É onde `VENDER` vale mais, e era
+  onde a maioria dos lotes se perdia. A régua virou uma tabela de cinco linhas.
+- **Achado colateral, e não pequeno:** o doc `global/regras_gerais` em produção
+  tinha, colada no fim, uma nota do supervisor mandando *"em posições em lucro,
+  eleve o chão para o `preco_minimo_venda_lucrativa` assim que possível"*. Isso
+  estava na PRIMEIRA camada do prompt, com prioridade máxima, desde 31/07 — e é
+  literalmente o comportamento que a V8.8 mediu como causa de 12 dos 13 stops com
+  prejuízo. O Motor já o recusava pela folga; o texto foi removido.
+- 22 testes novos (`tests/travaLucro.test.js`), incluindo o lote real que motivou
+  a versão como caso de regressão: trava armada acima do preço de compra, preço já
+  de volta ao vermelho, **nada é vendido**.
+
+**Sobre a janela de medição:** isto quebra o combinado de "até 12/08, nada muda
+no prompt nem nas regras". A exceção escrita na V8.8 é exatamente esta —
+prejuízo em curso com causa identificada, não ajuste fino nem ideia boa. A
+janela recomeça daqui.
+
+---
+
+## ✅ V8.10 — Controles rápidos: quatro cortes no mesmo lugar (2026-08-05)
+
+Pedido do dono, e o motivo dele é o desenho inteiro: **"se em algum momento eu
+precisar parar algo, consigo fazer isso rapidamente"**. Não é uma feature de
+operação — é o painel de segurança.
+
+- **Os quatro botões agora vivem no MESMO cartão** da Visão geral (⛔ Travar
+  tudo, 🧠 Desligar IA, 🔕 Desligar avisos, 💰 Ligar modo vendas). Estavam em
+  dois cartões separados, e em emergência ninguém rola a página procurando qual
+  botão era. Cada um tem banner próprio no topo, em cor distinta: confundir
+  "parado" com "sem IA" ou com "mudo" seria caro, porque **os três parecem um
+  robô normal na tela**.
+- **🧠 Desligar IA** (`global/controle.ia_desligada`, §10.9): a chave da IA para
+  de ser usada e o supervisor semanal fica pausado — inclusive contra o "rodar
+  agora", mesma disciplina do modo vendas. O ciclo do ativo continua rodando.
+- **A decisão que define esse botão**: o gate fica DEPOIS das saídas automáticas
+  do Motor e ANTES do filtro de variação. O que o dono desliga é a DECISÃO, não a
+  PROTEÇÃO — stop-loss e trava de lucro são determinísticos, não gastam quota e
+  continuam valendo. Colocá-lo antes transformaria o botão numa armadilha: as
+  posições ficariam sem chão parecendo protegidas. Para congelar tudo já existe a
+  parada de emergência, e é isso que separa os dois botões.
+- **O baseline da variação não avança** enquanto a IA está desligada: ao voltar,
+  ela vê a variação acumulada desde a última análise de verdade, não um degrau
+  engolido pelo desligamento.
+- **🔕 Desligar avisos** é o MESMO interruptor do card do Telegram
+  (`global/telegram.ativo`), que `resolverConfig` já respeita em todos os pontos
+  de envio — nenhuma fronteira nova, nenhum caminho de notificação duplicado.
+  Vale em até 5 min (catálogo cacheado) e **não toca em nenhum toggle de
+  evento**: religar devolve a configuração de antes. Furar o cache por causa de
+  um botão custaria leitura no tick de 1 minuto (invariante V5.2).
+- **Custo zero de leitura**: o flag da IA pega carona no `global/controle`, que o
+  tick já lê fresco a cada minuto. O heartbeat ganhou `ia_desligada` — é o que
+  prova que o BOT viu, não só que o flag foi escrito (mesma ideia do `travado`).
+- 4 testes novos, e o do meio é o que guarda o contrato: **com a IA desligada, o
+  stop-loss continua vendendo**. Se ele afrouxar, o botão vira uma armadilha.
 
 ---
 
@@ -1552,7 +1672,7 @@ identificada. Não vale para ajuste fino nem para ideia boa.
 antes da V6.6, 15 fechamentos pela IA, todos positivos; nas primeiras 24 h da
 V6.6, 7 por stop, todos negativos; assimetria realizada de **0,32×**
 — ganha 1 quando acerta, perde 3 quando erra —, número dominado por um
-único lote (a pior perda do histórico, ver V8.1). Tirando esse outlier a razão ia a 0,71× e o
+único lote (ver V8.1). Tirando esse outlier a razão ia a 0,71× e o
 resultado por lote virava positivo. É esse par de números que a janela nova
 precisa substituir por algo que descreva um sistema só.
 
@@ -1570,9 +1690,8 @@ posição sairia no lucro.
 - O supervisor roda em 01/08 e vai reescrever o prompt — por decisão consciente
   do dono (V8.6). A partir dali a amostra tem duas metades; separá-las depois se
   faz pelo `versao_supervisao` gravado em cada análise.
-- Aquele ativo da TORO continua DESLIGADO com uma posição real aberta: nenhum
-  ciclo roda, logo o stop dela não é conferido. Pendência antiga, não afeta a
-  medição.
+- TORO/SPCX34 continua DESLIGADO com uma posição real aberta: nenhum ciclo roda,
+  logo o stop dela não é conferido. Pendência antiga, não afeta a medição.
 
 **Quando a janela fechar (12/08):** ler os dois relatórios, e só então decidir
 entre as prioridades 2 (alvo mínimo / trava de realização) e 3 (saída como
@@ -1625,6 +1744,15 @@ Ordem sugerida: ler os dois relatórios semanais, olhar `capturaDoPico` primeiro
 
 ## ⬜ 2 — Alvo mínimo / trava de realização precoce (a antiga "V6.7")
 
+> ✅ **RESOLVIDO de outro jeito na V8.11 (2026-08-05) — ver o bloco 1.** A
+> pergunta desta prioridade ("o robô realiza cedo demais?") tinha a resposta
+> invertida: ele **não realizava**. Com folga de 5%, o chão do trailing só
+> travaria lucro acima de +5,3% a +6,7%, e o topo mediano dos 23 lotes fechados
+> foi de +1,09% — nenhum chegou lá. A entrega foi o oposto de uma trava CONTRA
+> realizar: uma **trava de lucro** que realiza a 0,8% do pico, com piso no
+> breakeven do lote. Os três caminhos listados abaixo continuam sem ser
+> implementados, e ficam registrados como alternativas descartadas.
+
 > ⚠️ **Revisar antes de implementar (2026-07-24):** os dados da V6.6.1 mostram o
 > problema INVERTIDO do descrito abaixo. Não há realização precoce — há ausência
 > de realização (3 `VENDER` em 565 análises). Uma trava contra vender cedo
@@ -1636,7 +1764,7 @@ Ordem sugerida: ler os dois relatórios semanais, olhar `capturaDoPico` primeiro
 > `assimetriaRealizada`, que responde com o dado que todo lote tem.
 >
 > **O primeiro número: 0,32× (ganho médio ÷ perda média), acerto 68%, resultado
-> NEGATIVO por lote.** Consistente com a tese abaixo — MAS tirando um único outlier a
+> por lote NEGATIVO.** Consistente com a tese abaixo — MAS tirando um único outlier a
 > razão vai a 0,71× e o resultado por lote vira POSITIVO, e os dois lados vêm de
 > regimes diferentes (ganhos pré-stop-loss × perdas do primeiro dia com ele).
 >
@@ -1922,9 +2050,9 @@ Detalhes que decidem o sucesso da fase:
 **Três coisas que só apareceram ao construir, e que mudaram o desenho:**
 
 1. **A Steam não devolve número nenhum** — dinheiro vem como texto já formatado
-   ("R$ 1.234,56", "$1,234.56"). A regra que resolve é a da ÚLTIMA ocorrência: o
+   (vírgula decimal em pt-BR, ponto decimal em en-US). A regra que resolve é a da ÚLTIMA ocorrência: o
    separador que aparece por último é o decimal. E separador único com 3 casas
-   ("R$ 1,234") é MILHAR — ler isso como decimal erraria o preço por mil vezes.
+   (separador único com 3 casas) é MILHAR — ler isso como decimal erraria o preço por mil vezes.
    É o teste que mais importa do arquivo.
 2. **Varrer preço demora, e o tick do orquestrador é serial.** Uma chamada por
    item + limite de ~20/min significa que 100 itens levariam ~6 minutos
@@ -2194,10 +2322,10 @@ por que ele é como é.
   (2026-07-25) FEITO — ver **V8.0**. Entregue como LIQUIDAÇÃO (encerrar a carteira
   com o menor prejuízo possível dentro de um prazo), não como "vender melhor" no
   dia a dia.
-- ✅ ~~Resetar lucros, posições e saldos, semeando um caixa menor~~
+- ✅ ~~Resetar lucros, posições e saldos, colocar valores aproximados (2700 entre as plataformas)~~
   (2026-07-27) FEITO — ver **V8.6**. Ferramenta na V8.2
-  (`scripts/resetar-dados.mjs` · MANUAL §8.8), com o caixa novo distribuído
-  entre as três plataformas. **Analisar os resultados antes de
+  (`scripts/resetar-dados.mjs` · MANUAL §8.8); execução com caixa reduzido a
+  cerca de um quarto do anterior, dividido entre MB, BN e TT. **Analisar os resultados antes de
   migrar qualquer ativo para modo real continua valendo** — é para isso que a
   janela de medição existe.
 - ✅ ~~Estudar deixar o repo público ou criar outro repo para mostrar o projeto como portfólio~~

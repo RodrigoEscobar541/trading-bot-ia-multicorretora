@@ -35,7 +35,17 @@
 > vinha da IA subindo o chão até colar no preço (12 dos 13 stops com prejuízo).
 > Agora existe UM número por ativo — a folga — que é a distância mínima entre o
 > preço e qualquer chão, e a config do dono é o PISO dele. **Leia a 10.7 antes de
-> mexer em stop-loss, trailing ou nos ajustes de chão.**
+> mexer em stop-loss, trailing ou nos ajustes de chão.** A V8.11 (2026-08-05)
+> trouxe a **TRAVA DE LUCRO** (seção 10.8), depois de a produção mostrar que a
+> V8.8 tinha resolvido metade do problema e criado a outra: com a folga em 5%, o
+> chão do trailing só travaria lucro acima de +5,3% a +6,7%, e o topo mediano
+> dos 23 lotes fechados foi de **+1,09%** (o maior de todos, +3,07%). A trava de
+> lucro do sistema não estava apertada demais — era **inalcançável**. O remédio é
+> separar de novo o que a V8.8 fundiu: o `stop_loss` é o chão LARGO que corta
+> prejuízo, e a `trava_lucro` é um SEGUNDO chão, ESTREITO, que só existe acima do
+> breakeven do lote e realiza o ganho. **Ela não é uma terceira exceção à regra
+> imutável 4** — a venda dela passa pelo `avaliar()` de sempre. Junto veio a
+> folga de 5% → 2% (§10.7). **Leia a 10.8 antes de mexer em qualquer saída.**
 > Histórico completo de todas as
 > versões (incluindo os planos de execução já consolidados) no `ROADMAP.md`.
 
@@ -105,7 +115,7 @@ RECOMENDAÇÃO para o dono executar e registrar manualmente.
 | `src/nucleo/supervisor.js` | O AGENTE SUPERVISOR semanal (V7.2 — §9.1). Monta o retrato da semana (decisões, justificativas, posições abertas, operações, a camada vigente), chama a IA pela cadeia própria, valida a resposta e grava a camada nova em `global/supervisao` (versionada, com as 5 últimas para rollback). Funções puras separadas: `naJanelaDeQuota`, `deveSupervisionar`, `formatarSupervisao`. NÃO emite ordem, NÃO mexe em posição, NÃO escreve nas regras gerais/template/prompt do ativo. Falha sua = camada anterior continua valendo. |
 | `src/ia/validadorSupervisao.js` | Valida a saída do supervisor e é a trava principal do arranjo: recusa a versão INTEIRA (mantendo a anterior) quando o texto passa de 6.000 caracteres ou tenta mexer no formato de saída, revogar as regras gerais ou mandar vender no prejuízo. Também `recortarSupervisao` — o corte por ativo (`## Geral` + `## PLATAFORMA/ATIVO`), para a nota de um ativo nunca vazar para o prompt de outro. |
 | `src/ia/promptBase.md` | SEMENTE do template (agnóstico de ativo). Na migração vira o doc `template` da plataforma no Firestore — a fonte editável passa a ser o Firestore; o arquivo fica como fallback. O mesmo padrão vale para `.md/regras_gerais.md` → doc `global/regras_gerais`, semeado na inicialização (`garantirRegrasGerais`). |
-| `src/regras/regrasEngine.js` | Motor de Regras determinístico e puro. Última palavra antes de qualquer execução. Agnóstico de ativo: mínimos vêm da config; orçamento por ativo; fórmula normativa do lucro (`calcularLucroLiquidoVenda`). Venda validada POR POSIÇÃO (§11.1). V6.6: `validarStopLossCompra` (chão obrigatório na compra, truncado no teto), `avaliarStopLoss` (venda no prejuízo determinística — §10.2) e `validarAjustesStopLoss` (trailing da IA, só para cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa — §10.2). Pós-V6.6: `avaliarTrailingStop` (o Motor sobe o chão sozinho, todo ciclo, em posição com lucro — §10.3) e `taxaCompraPercentualEfetiva`/`breakevenPosicao` (breakeven pela taxa REAL paga na compra — §10.4). V8.5: `avaliarPicoPosicoes` — quais lotes fizeram máxima nova (§10.6); é MEDIÇÃO, não decide nada e não toca em chão nem em venda. **V8.8: `folgaMinimaPercentual` — a distância mínima entre o preço e QUALQUER chão (§10.7), o remédio para o prejuízo que o stop vinha dando; um número só governa o trailing do Motor, o chão da compra e os ajustes da IA, e a config do ativo é PISO dele (a IA só alarga).** |
+| `src/regras/regrasEngine.js` | Motor de Regras determinístico e puro. Última palavra antes de qualquer execução. Agnóstico de ativo: mínimos vêm da config; orçamento por ativo; fórmula normativa do lucro (`calcularLucroLiquidoVenda`). Venda validada POR POSIÇÃO (§11.1). V6.6: `validarStopLossCompra` (chão obrigatório na compra, truncado no teto), `avaliarStopLoss` (venda no prejuízo determinística — §10.2) e `validarAjustesStopLoss` (trailing da IA, só para cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa — §10.2). Pós-V6.6: `avaliarTrailingStop` (o Motor sobe o chão sozinho, todo ciclo, em posição com lucro — §10.3) e `taxaCompraPercentualEfetiva`/`breakevenPosicao` (breakeven pela taxa REAL paga na compra — §10.4). V8.5: `avaliarPicoPosicoes` — quais lotes fizeram máxima nova (§10.6); é MEDIÇÃO, não decide nada e não toca em chão nem em venda. **V8.8: `folgaMinimaPercentual` — a distância mínima entre o preço e QUALQUER chão (§10.7), o remédio para o prejuízo que o stop vinha dando; um número só governa o trailing do Motor, o chão da compra e os ajustes da IA, e a config do ativo é PISO dele (a IA só alarga). V8.11: `avaliarTravaLucro` + `posicoesComTravaFurada` + `travaLucroConfig` — a TRAVA DE LUCRO (§10.8), o segundo chão, ESTREITO, que só existe acima do breakeven e realiza o ganho; não é exceção à regra 4 porque a venda dela passa pelo `avaliar()` de sempre.** |
 | `src/posicoes/posicoes.js` | Posições independentes (lotes, §11.1) POR (plataforma, ativo): abertura/fechamento, ciclo de vida, lucro e preço mínimo por posição, reconciliação com o saldo do ativo (entrada externa → posição `externa`; saque → abate). |
 | `src/executor/executor.js` | Único ponto onde `modo_simulacao` (da config DO ATIVO) muda o fluxo. Fornece a carteira ativa, o contexto de execução (preço reconsultado + ordens abertas) e o patrimônio da plataforma; executa e registra operações/estatísticas. O **lucro REALIZADO** de uma venda REAL usa as taxas EFETIVAS da corretora (`lucroRealizadoVenda`, taxas absolutas): a de venda vem do fill **quando > 0** (senão cai para a estimativa da config); a de compra é a real gravada na posição (posição externa, sem taxa → estimativa da config). A validação pré-ordem do Motor segue na config conservadora (garante "nunca vender no prejuízo" ANTES de existir fill). |
 | `src/executor/simulador.js` | Execução fictícia contra a carteira virtual POR PLATAFORMA (`plataformas/{P}/dados/estado`): um caixa + um saldo por ativo. Venda sempre por lotes; espelha depósitos/saques reais (delta). |
@@ -303,6 +313,8 @@ IA-investidora/
         "preco_minimo_venda_lucrativa": 350355.33,
         "stop_loss": 332500.00,
         "stop_loss_motivo": "Abaixo do fundo recente e da MM50.",
+        "preco_maximo": 354000.00,
+        "trava_lucro": 351168.00,
         "aberta_em": "2026-07-08T10:15:00Z"
       },
       {
@@ -314,6 +326,8 @@ IA-investidora/
         "preco_minimo_venda_lucrativa": 362720.81,
         "stop_loss": null,
         "stop_loss_motivo": null,
+        "preco_maximo": 352000.00,
+        "trava_lucro": null,
         "aberta_em": "2026-07-09T18:30:00Z"
       }
     ]
@@ -324,7 +338,9 @@ IA-investidora/
     "percentual_minimo_para_chamar_ia": 0.30,
     "tempo_reset_dias": 7,
     "orcamento_percentual": 50,
-    "folga_minima_stop_percentual": 5
+    "folga_minima_stop_percentual": 2,
+    "trava_lucro_gatilho_percentual": 1,
+    "trava_lucro_devolucao_percentual": 0.8
   },
   "historico_resumido": {
     "ultima_decisao": "AGUARDAR",
@@ -424,14 +440,19 @@ modelo da cadeia respondeu) e, quando inválida, `motivo_invalidez`.
 reais carregam `order_id`; erros carregam `motivo_erro`; `posicoes` lista os
 ids das posições abertas (compra) ou fechadas (venda). Rejeições nunca são
 descartadas em silêncio.
-**`origem_decisao`** (V6.6) ∈ {`ia`, `motor_stop_loss`, `ia_modo_vendas`} diz QUEM decidiu: é o
+**`origem_decisao`** (V6.6) ∈ {`ia`, `motor_stop_loss`, `motor_trava_lucro`,
+`ia_modo_vendas`} diz QUEM decidiu: é o
 campo que permite filtrar no Firestore todas as vendas disparadas pelo
 stop-loss (base da análise das decisões) e o que faz a dashboard pintar esse
 marcador em cor própria. Vendas por stop carregam ainda `stop_loss`
 (`[{ id, stop_loss, motivo }]` por posição). Vendas na LIQUIDAÇÃO (V8) carregam
 `origem_decisao: 'ia_modo_vendas'` e `modo_vendas: { dia, dias_totais,
 perda_maxima_percentual }`. Essas duas origens são as ÚNICAS com `lucro_liquido`
-possivelmente negativo. `sugerida` é exclusivo de plataforma ASSISTIDA (V6):
+possivelmente negativo. `motor_trava_lucro` (V8.11, §10.8) é a terceira origem do
+Motor e o oposto do stop: ela SÓ existe com lucro positivo. Separá-la de
+`motor_stop_loss` é o que permite ler o histórico e saber se o robô se protegeu
+de uma queda ou se realizou um ganho — misturadas, as duas viram "o Motor
+vendeu", que não diz nada. `sugerida` é exclusivo de plataforma ASSISTIDA (V6):
 aprovação que virou recomendação, sem execução. `tipo` ganhou `DIVIDENDO`
 (provento INFORMATIVO registrado pelo dono na dashboard — V6.3; `lucro_liquido`
 null, não entra no lucro de trading) e operações registradas pelo dono carregam
@@ -471,8 +492,10 @@ global (coleção)
 │   `.git` local; responde "o deploy pegou?" sem SSH), instancia, primario,
 │   ultima_rodada, `telegram` (V7 —
 │   resultado do último envio de aviso: { ok, erro, em }; é o que faz um chat
-│   id errado aparecer na TELA em vez de morrer no log do pm2) e `travado`
-│   (V6.2 — confirma que o bot viu a parada). A dashboard mostra o bot como
+│   id errado aparecer na TELA em vez de morrer no log do pm2), `travado`
+│   (V6.2 — confirma que o bot viu a parada) e `ia_desligada` (V8.10 — mesma
+│   confirmação para o kill-switch da IA: o flag escrito não prova que a chave
+│   parou de ser usada). A dashboard mostra o bot como
 │   ONLINE se atualizado_em tem < 3 min — visibilidade do processo 24/7 na VPS)
 ├── regras_gerais_venda (doc V8: as regras gerais do MODO VENDAS — substituem
 │   `regras_gerais` na 1ª camada do prompt enquanto a liquidação durar. Mesmo
@@ -501,7 +524,10 @@ global (coleção)
 │   (ISO, a origem da rampa), `modo_vendas_dias` (janela, padrão 7) e
 │   `modo_vendas_perda_maxima_percentual` (teto, padrão 15). Mesma carona: o modo
 │   não custa leitura nova. Desligar ZERA o `desde`, para uma liquidação nova
-│   nunca começar no meio da rampa antiga — ver §10.5)
+│   nunca começar no meio da rampa antiga — ver §10.5.
+│   V8.10: carrega também `ia_desligada` (bool) + `ia_desligada_em` — o
+│   KILL-SWITCH DA IA (§10.9). Mesma carona. Ligado, o ciclo de cada ativo roda
+│   inteiro MENOS a chamada à IA, e o supervisor semanal fica pausado)
 ├── supervisao (doc V7.2, a CAMADA de prompt escrita pelo agente supervisor.
 │   Guarda DUAS coisas de frescor diferente e não se deve confundi-las: a CAMADA
 │   em vigor — `conteudo` (markdown com `## Geral` e `## PLATAFORMA/ATIVO`),
@@ -672,7 +698,16 @@ plataformas (coleção)
                             a cada ciclo. Nasce no preço de compra, NUNCA null:
                             é a metade que falta para julgar a saída padrão
                             (§10.2.1) — sem ele o lote fechado diz quanto rendeu
-                            e nunca quanto CHEGOU a render)
+                            e nunca quanto CHEGOU a render; V8.11:
+                            trava_lucro + trava_lucro_em — a TRAVA DE LUCRO
+                            (§10.8), o SEGUNDO chão, estreito, que só existe
+                            acima do breakeven do lote e é quem realiza o ganho.
+                            null = ainda não armou. Separado do stop_loss de
+                            propósito: aquele é largo porque protege de perda,
+                            este é estreito porque realiza — um número só não
+                            faz os dois, e foi essa fusão que apagou o lucro na
+                            V8.8. Mais trava_recomendada_em, o anti-spam da
+                            recomendação em plataforma assistida)
 ```
 
 - `logs` continua coleção global (entradas técnicas aviso/erro/crítico).
@@ -993,6 +1028,13 @@ Decisão `AGUARDAR` (ou resposta inválida da IA) não gera operação nem rejei
 
 ### 10.2.1 A ESTRATÉGIA DE SAÍDA (leia antes de mexer em venda)
 
+> **ATUALIZADO NA V8.11.** Desde a §10.8 são **três** saídas, não duas: o chão
+> LARGO que corta prejuízo (§10.3), a TRAVA DE LUCRO estreita que realiza o
+> ganho (§10.8) e o `VENDER` da IA. O texto abaixo continua valendo para a
+> mecânica do trailing, mas onde ele diz que o chão que sobe é "o mecanismo
+> principal de realização", leia §10.8: com folga de 5% ele nunca alcançou os
+> lotes reais, e é a trava que faz esse trabalho agora.
+
 O sistema tem **duas saídas**, e a distinção é deliberada — quem for alterar
 prompt ou Motor precisa saber qual está tocando:
 
@@ -1189,6 +1231,92 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   dashboard. É o mesmo `stop_loss_trailing_percentual` de sempre — ganhou o
   segundo papel, não um campo novo.
 
+### 10.8 TRAVA DE LUCRO (V8.11) — o chão estreito que realiza o ganho
+
+- **O que os números mostraram** (2026-08-05, 23 lotes fechados desde o reset):
+  topo mediano do lote **+1,09%**, maior topo de todos **+3,07%**. A §10.7 já
+  dizia que com folga de 5% o lote só começa a travar lucro acima de +5,3% (TT)
+  a +6,7% (MB) — o que ninguém tinha feito era comparar esse número com o que os
+  lotes de verdade fazem. **Zero** deles chegou lá. O trailing rodava, subia o
+  chão e "funcionava", mas o chão nunca passava do preço de compra: todo lote
+  vencedor devolvia o movimento inteiro e morria no stop. Placar: 17 saídas por
+  stop contra 6 vendas no lucro, e o resultado somado das primeiras foi mais de
+  3× o das segundas — com o sinal trocado.
+- **A causa**: UM número fazendo dois trabalhos opostos. O chão que protege do
+  prejuízo tem de ser LARGO (aguentar o ruído do dia); o que realiza lucro tem de
+  ser ESTREITO (menor que o movimento típico). A V8.8 os fundiu na folga e
+  escolheu o valor largo — o lado do lucro sumiu sem que nada acusasse.
+- **A solução**: dois chãos com papéis explícitos, por posição.
+  · `stop_loss` → LARGO (a folga, §10.7). Pode vender no prejuízo. Exceção da §4.
+  · `trava_lucro` → ESTREITO, e **só existe acima do breakeven do lote**.
+- **Como funciona** (`regrasEngine.avaliarTravaLucro`, pura, todo ciclo): quando
+  o `preco_maximo` do lote passa de `breakeven × (1 + gatilho%)`, o Motor arma a
+  trava a `devolucao%` abaixo do PICO — nunca abaixo do breakeven. Quem arma é o
+  PICO, não o preço de agora: armada, ela não desarma se o preço recuar, que é
+  exatamente quando ela precisa estar de pé. Só sobe, e ignora movimento abaixo
+  do mesmo limiar de ruído do trailing.
+- **Por que NÃO é uma terceira exceção à regra imutável 4**: a trava nunca desce
+  abaixo do breakeven, `posicoesComTravaFurada` descarta lote sem lucro líquido
+  positivo, e a venda é montada como decisão sintética que passa pelo
+  **`avaliar()` normal** — o mesmo caminho que recusa qualquer lote sem lucro.
+  Nenhuma via de venda nova foi criada. Se a conta da trava estiver errada, o
+  pior desfecho é uma venda que não acontece.
+- **O piso no breakeven é o que dispensa a folga mínima da §10.7 aqui**: a folga
+  existe para o chão não ser furado por ruído NO VERMELHO; na trava, o pior que o
+  ruído faz é realizar um lucro menor do que daria para esperar. Trocar prejuízo
+  por lucro pequeno é o negócio que se quer fazer — e é por isso que os dois
+  mecanismos podem ter distâncias tão diferentes sem se contradizer.
+- **Rastro**: a venda carrega `origem_decisao: 'motor_trava_lucro'` (terceira
+  origem do Motor, ao lado de `motor_stop_loss` e `ia_modo_vendas`), fecha o lote
+  com `fechada_por: 'lucro'`, e o histórico grava `tipo: 'trava_lucro'`. A
+  dashboard pinta em cor própria e o Telegram avisa com nome próprio — misturá-la
+  com o stop esconderia se o robô se protegeu ou se ganhou dinheiro.
+- **Config por ativo** (dashboard, na tela do ativo):
+  `trava_lucro_gatilho_percentual` (padrão 1%) e
+  `trava_lucro_devolucao_percentual` (padrão 0,8%). Qualquer um em **0 desliga**
+  a trava naquele ativo, e o sistema volta a se comportar como na V8.8.
+- **A folga caiu de 5% para 2% na mesma versão** (§10.7): com a trava cuidando da
+  realização, a folga voltou a ter um trabalho só — aguentar o ruído do dia. Os
+  dois números são independentes de propósito, e é isso que permite ajustar um
+  sem estragar o outro.
+- **O que a IA passou a receber** (§6.1): `trava_lucro` e `preco_maximo` em cada
+  posição, mais os dois percentuais em `configuracoes`. Sem isso ela continuaria
+  tentando apertar o chão em lote vencedor (pedido que a folga recusa) em vez de
+  entender que `AGUARDAR` ali é a decisão de deixar a trava trabalhar.
+- **A faixa que continua sendo dela**: lote em lucro com `trava_lucro: null` — o
+  ganho é pequeno demais para a trava e o chão de proteção ainda está lá embaixo.
+  Nada automático reage ali, e é onde `VENDER` vale mais. As regras gerais §4.1
+  dizem isso com todas as letras.
+
+### 10.9 KILL-SWITCH DA IA (V8.10) — desligar quem decide sem parar quem protege
+
+- **O que é**: `global/controle.ia_desligada`, ligado pelo botão "Desligar IA"
+  dos CONTROLES RÁPIDOS da visão geral. Com ele ligado, o ciclo de cada ativo
+  roda inteiro **menos a chamada à IA**, e o supervisor semanal fica pausado
+  (`deveSupervisionar`, antes do `forcar` — o "rodar agora" não fura a trava,
+  mesma disciplina do modo vendas). Mesma carona do `global/controle`: nenhuma
+  leitura nova no tick de 1 min.
+- **A ordem dentro do ciclo é o desenho inteiro**: o gate fica DEPOIS de
+  `verificarSaidasAutomaticas` (stop-loss e trava de lucro) e ANTES do filtro de
+  variação. O que o dono desliga aqui é a DECISÃO, não a PROTEÇÃO — as saídas
+  automáticas são do Motor, são determinísticas e não gastam quota. Movê-lo para
+  cima transformaria o botão numa armadilha: as posições ficariam sem chão
+  parecendo protegidas. Para congelar tudo existe a parada de emergência.
+- **O baseline não avança** (`preco_ultima_analise`): quando a IA voltar, ela vê
+  a variação acumulada desde a última análise DE VERDADE, não desde o último
+  tick engolido pelo desligamento.
+- **Rastro**: cada ciclo grava `verificacao` no histórico com o motivo, e o
+  heartbeat carrega `ia_desligada` — é o que prova que o BOT viu, não só que o
+  flag foi escrito. A dashboard mostra banner próprio (cor diferente da parada
+  de emergência: são estados diferentes).
+- **O corte dos AVISOS não mora aqui**: o botão "Desligar avisos" é o mesmo
+  interruptor do card do Telegram (`global/telegram.ativo`), que `resolverConfig`
+  já respeita em todo ponto de envio. Vale em até 5 min (catálogo cacheado) e
+  **não toca em nenhum toggle de evento** — religar devolve a configuração de
+  antes. Furar o cache por esse botão custaria leitura no tick de 1 min.
+
+---
+
 ## 11. Modo Simulação
 
 - Ativado/desativado POR ATIVO (`config.modo_simulacao`, toggle na dashboard) —
@@ -1288,6 +1416,14 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   o dono edita a camada, o diagnóstico deixa de descrever o texto em vigor — a
   tela AVISA isso (comparando `versao_rodada` com `versao`) em vez de exibir os
   dois lado a lado como se falassem do mesmo texto.
+- **CONTROLES RÁPIDOS na Visão geral** (V8.10): os quatro cortes de emergência
+  ficam num cartão SÓ, na seção "Ajustes" — ⛔ Travar tudo, 🧠 Desligar IA
+  (§10.9), 🔕 Desligar avisos e 💰 Ligar modo vendas (§10.5, por último: é o
+  único que VENDE e o único com campos próprios). Estavam em dois cartões
+  separados até a V8.10, e o motivo de juntá-los é operacional: em emergência
+  ninguém rola a página procurando qual botão era. Cada um pede confirmação, cada
+  um tem banner próprio no topo (cores distintas — confundir "parado" com "sem
+  IA" ou "mudo" seria caro) e todos são reversíveis pelo mesmo botão.
 - **Modo vendas na Visão geral** (V8): cartão com o botão liga/desliga (com
   confirmação que soletra "poderá VENDER NO PREJUÍZO até X%"), os campos de
   janela e teto, e um **banner** enquanto durar mostrando o dia e a tolerância de
@@ -1365,7 +1501,7 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
 ```bash
 npm start        # bot 24/7 (carrega .env se existir)
 npm run test:rules  # regras do Firestore contra o emulador (exige Java) — 9 casos
-npm test         # 510 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO/STEAM, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado; STEAM fase 1 (2026-08-05): dinheiro formatado lido certo nas duas convenções (e separador único com 3 casas é MILHAR, não decimal — errar isso erraria o preço por mil vezes), preço ilegível vira null e nunca zero, itens iguais viram UMA linha com quantidade somada, item não negociável ENTRA na lista marcado, 429 INTERROMPE a varredura de preços, o rodízio dá a volta na lista, o preço de quem ficou fora da fatia é preservado com a data dele, o retrato NÃO guarda se o item é analisado, Steam fora do ar não lança e mantém o retrato anterior, e o conector NUNCA envia ordem nem devolve candle vazio; STEAM fase 2 (2026-08-05): a novidade sai do `gid` e nunca da data ou do título, a PRIMEIRA leitura não avisa nada, sem novidade não há escrita no banco, feed de site parceiro fica de fora, o ouvinte respeita o intervalo do dono, Steam fora do ar não lança — e o BBCode REAL das notas do CS2 (colchete escapado, `[/*]`, `[p]` dentro do item de lista) vira texto legível, com o teste montado a partir de uma nota de produção; STEAM fase 3 (2026-08-05): o ciclo de um ativo `usaIndicadores: false` NÃO pede candle e manda os indicadores como null EXPLÍCITO, a série própria ignora ponto cedo demais e responde `null` — nunca 0 — na janela que ainda não cobre, a plataforma da Steam não recebe as regras gerais **enquanto todas as outras continuam recebendo** (o caso que protege o sistema inteiro), template vazio ali não cai na semente de ativo financeiro, a liquidação ignora o flag, a camada de notícias entra antes do CONTRATO_SAIDA, e notícia nova FURA o filtro de variação uma vez; ALERTA DE PREÇO-ALVO fase 5 (2026-08-05): dispara UMA vez por travessia e rearma quando o preço volta — item parado abaixo do alvo não vira aviso por hora —, preço exatamente no alvo conta como cruzado, item sem preço legível não dispara nada (null não é zero), e o alvo do dono nunca é tocado pelo estado que o bot grava no mesmo documento)
+npm test         # 532 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO/STEAM, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado; STEAM fase 1 (2026-08-05): dinheiro formatado lido certo nas duas convenções (e separador único com 3 casas é MILHAR, não decimal — errar isso erraria o preço por mil vezes), preço ilegível vira null e nunca zero, itens iguais viram UMA linha com quantidade somada, item não negociável ENTRA na lista marcado, 429 INTERROMPE a varredura de preços, o rodízio dá a volta na lista, o preço de quem ficou fora da fatia é preservado com a data dele, o retrato NÃO guarda se o item é analisado, Steam fora do ar não lança e mantém o retrato anterior, e o conector NUNCA envia ordem nem devolve candle vazio; STEAM fase 2 (2026-08-05): a novidade sai do `gid` e nunca da data ou do título, a PRIMEIRA leitura não avisa nada, sem novidade não há escrita no banco, feed de site parceiro fica de fora, o ouvinte respeita o intervalo do dono, Steam fora do ar não lança — e o BBCode REAL das notas do CS2 (colchete escapado, `[/*]`, `[p]` dentro do item de lista) vira texto legível, com o teste montado a partir de uma nota de produção; STEAM fase 3 (2026-08-05): o ciclo de um ativo `usaIndicadores: false` NÃO pede candle e manda os indicadores como null EXPLÍCITO, a série própria ignora ponto cedo demais e responde `null` — nunca 0 — na janela que ainda não cobre, a plataforma da Steam não recebe as regras gerais **enquanto todas as outras continuam recebendo** (o caso que protege o sistema inteiro), template vazio ali não cai na semente de ativo financeiro, a liquidação ignora o flag, a camada de notícias entra antes do CONTRATO_SAIDA, e notícia nova FURA o filtro de variação uma vez; ALERTA DE PREÇO-ALVO fase 5 (2026-08-05): dispara UMA vez por travessia e rearma quando o preço volta — item parado abaixo do alvo não vira aviso por hora —, preço exatamente no alvo conta como cruzado, item sem preço legível não dispara nada (null não é zero), e o alvo do dono nunca é tocado pelo estado que o bot grava no mesmo documento; TRAVA DE LUCRO V8.11 (tests/travaLucro.test.js): a trava NUNCA fica abaixo do breakeven — nem com devolução absurda —, só arma depois de o PICO passar do gatilho, só sobe, ruído abaixo de 0,1% não vira escrita, gatilho ou devolução em 0 a desliga por completo, lote sem lucro na hora da venda NÃO é vendido por ela (o caso de produção que motivou a versão: trava armada acima da compra, preço já de volta ao vermelho, nada sai), o stop-loss tem precedência quando os dois disparam, e a regressão que prova o conserto — com a folga ANTIGA de 5% o chão nem chega ao preço de compra num movimento de 4%, e mesmo assim a trava realiza)
 ```
 
 Requisito: **Node >= 22** (o conector da Tastytrade usa o WebSocket nativo
@@ -1548,6 +1684,16 @@ manter o sistema, e o custo de um detalhe a menos é alto.
   existe TETO — a rampa vira platô, nunca escada infinita. Todo teste de
   `tests/modoVendas.test.js` que começa com "modo desligado" é o contrato de que
   a operação normal não mudou; nenhum deles pode ser afrouxado.
+- **A TRAVA DE LUCRO (§10.8) e a FOLGA (§10.7) são DOIS números com trabalhos
+  opostos — nunca volte a fundi-los.** Foi essa fusão que fez a V8.8 consertar o
+  prejuízo e apagar o lucro no mesmo movimento. Ao mexer, preservar: a trava
+  NUNCA fica abaixo do breakeven do lote (é o que a impede de dar prejuízo e o
+  que a mantém fora da regra 4); a venda dela passa pelo `avaliar()` normal e
+  nenhuma via de venda nova pode ser criada para ela; quem arma é o PICO, não o
+  preço de agora (armar pelo preço a faria desarmar justamente quando é
+  precisa); e gatilho ou devolução em 0 tem de desligá-la por completo. Se um
+  teste de `tests/travaLucro.test.js` precisar ser afrouxado para uma mudança
+  passar, é a mudança que está errada.
 - **A FOLGA MÍNIMA DO CHÃO (§10.7) existe porque a falta dela custou dinheiro
   medido.** Ao mexer no stop, preservar: existe UM número de folga por ativo, e a
   config do dono é PISO dele (a IA só alarga — inverter isso é voltar ao bug em
@@ -1578,7 +1724,6 @@ manter o sistema, e o custo de um detalhe a menos é alto.
 - Comentários, mensagens e documentação em PT-BR, seguindo o estilo dos módulos existentes.
 
 ---
-
 
 ## Git Commit Convention
 

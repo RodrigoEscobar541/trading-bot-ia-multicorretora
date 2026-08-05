@@ -166,11 +166,17 @@ export function formatarOperacao({ plataformaId, ativoId, operacao, moeda = null
   const lucro = operacao.lucro_liquido;
   const sinal = Number.isFinite(lucro) && lucro < 0 ? '🔴' : '🔵';
   const porLiquidacao = operacao.origem_decisao === 'ia_modo_vendas';
+  // Trava de lucro (V8.11): o Motor realizando o ganho. É o oposto do stop e
+  // precisa de nome próprio no aviso — senão o dono vê "venda" e não sabe se o
+  // robô se protegeu de uma queda ou se travou um lucro.
+  const porTrava = operacao.origem_decisao === 'motor_trava_lucro';
   const titulo = porStop
     ? 'Venda por STOP-LOSS'
-    : porLiquidacao
-      ? `Venda na liquidação (dia ${operacao.modo_vendas?.dia ?? '?'}/${operacao.modo_vendas?.dias_totais ?? '?'})`
-      : 'Venda';
+    : porTrava
+      ? 'Venda pela TRAVA DE LUCRO'
+      : porLiquidacao
+        ? `Venda na liquidação (dia ${operacao.modo_vendas?.dia ?? '?'}/${operacao.modo_vendas?.dias_totais ?? '?'})`
+        : 'Venda';
   const resultado = Number.isFinite(lucro)
     ? `\nResultado: <b>${lucro >= 0 ? '+' : ''}${dinheiro(lucro, moeda)}</b>`
     : '';
