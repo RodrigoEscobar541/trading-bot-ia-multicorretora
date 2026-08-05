@@ -21,7 +21,7 @@ import {
   salvarApiMeta,
   mascararApi,
 } from '../firebase/firebaseClient.js';
-import { plataformasCache, apiCache, ativosCache, telegramCache, supervisorConfigCache } from './catalogo.js';
+import { plataformasCache, apiCache, ativosCache, telegramCache, supervisorConfigCache, invalidarCatalogo } from './catalogo.js';
 import {
   notificarProblema,
   notificarRecuperacao,
@@ -42,6 +42,8 @@ import { criarConector } from '../conectores/conector.js';
 import { estadoModoVendas } from '../regras/regrasEngine.js';
 import { executarCicloAtivo } from './cicloAtivo.js';
 import { atualizarRendaReal, atualizarCambio } from './rendaReal.js';
+import { atualizarInventario } from './inventarioSteam.js';
+import { verificarNoticias } from './noticiasJogo.js';
 import { log } from '../utils/logger.js';
 
 const TICK_MS = 60_000; // granularidade do agendador: 1 minuto
@@ -366,7 +368,7 @@ async function obterMercadoDaPlataforma(plataforma, conector, ligados) {
  * ligados cujo intervalo venceu. Devolve um resumo por ativo executado.
  * `decidirFn` é injetável para testes.
  */
-export async function executarRodada({ agora = new Date(), decidirFn, modoVendas = null } = {}) {
+export async function executarRodada({ agora = new Date(), decidirFn, modoVendas = null, forcarInventario = false } = {}) {
   const resumo = [];
   // Config vem do catálogo cacheado (TTL 5 min) — o tick de 1 min não relê
   // plataformas/chaves/ativos do Firestore (V5_2_Plan.MD §2.1). O filtro por
@@ -389,6 +391,41 @@ export async function executarRodada({ agora = new Date(), decidirFn, modoVendas
     }
 
     await verificarConexaoPlataforma(plataforma, api, conector);
+
+    // Plataformas com INVENTÁRIO (hoje a Steam): o bot lê a lista de itens do
+    // dono e publica o retrato para a dashboard, que não consegue ler a Steam
+    // direto (sem CORS). O gate é a CAPACIDADE do conector, nunca o nome da
+    // plataforma — o núcleo não conhece "STEAM" (CLAUDE.md §16). A própria
+    // função decide se o intervalo venceu e nunca lança.
+    if (typeof conector.inventario === 'function') {
+      await atualizarInventario({
+        plataforma,
+        conector,
+        agoraMs: agora.getTime(),
+        forcar: forcarInventario,
+        configTelegram: await telegramCache(), // alertas de preço-alvo
+      });
+    }
+
+    // Atualizações do JOGO (fase 2 da Steam): num mercado de skin, notícia do
+    // jogo é o fundamento. Mesmo gate por capacidade, mesmo contrato de nunca
+    // lançar, e a config do Telegram vem do catálogo cacheado — notificar não
+    // pode custar leitura por evento (V5.2).
+    let noticiaNova = false;
+    if (typeof conector.noticias === 'function') {
+      const r = await verificarNoticias({
+        plataforma,
+        conector,
+        agoraMs: agora.getTime(),
+        configTelegram: await telegramCache(),
+      });
+      noticiaNova = (r.novas?.length ?? 0) > 0;
+      // A camada de notícias do prompt vem do catálogo cacheado (TTL 5 min).
+      // Com anúncio novo o cache precisa cair AGORA, senão a análise que ele
+      // acabou de forçar leria o documento anterior — analisaria sem a notícia
+      // que é o motivo da análise.
+      if (noticiaNova) invalidarCatalogo();
+    }
 
     const ativos = await ativosCache(plataforma.id);
     const ligados = ativos.filter((a) => a.config.ativo !== false);
@@ -424,6 +461,10 @@ export async function executarRodada({ agora = new Date(), decidirFn, modoVendas
           conector,
           estado,
           modoVendas, // liquidação (V8) — null quando o modo está desligado
+          // Saiu atualização do jogo nesta rodada: os ativos desta plataforma
+          // analisam mesmo sem o preço ter se mexido (o preço se move DEPOIS
+          // da notícia, e é justamente isso que se quer avaliar antes).
+          forcarAnalise: noticiaNova,
           ...(decidirFn ? { decidirFn } : {}),
         });
         if (resultado.estado) estadoAtivos.set(chaveEstado, resultado.estado);
@@ -542,12 +583,18 @@ export async function iniciarOrquestrador() {
   // Marca de invalidação do estado em memória vista no tick anterior.
   // `undefined` = ainda nenhum tick leu o controle (ver deveLimparEstadoEmMemoria).
   let invalidacaoVista;
+  // Marca do último pedido de "atualizar inventário agora" já atendido.
+  // `undefined` = nenhum tick leu ainda; o primeiro só ANOTA (o inventário já
+  // é montado no boot de qualquer forma, e reiniciar o bot não deve refazer um
+  // pedido antigo).
+  let inventarioPedidoVisto;
   for (;;) {
     // Parada de emergência (V6.2): lido FRESCO a cada tick (fora do catálogo —
     // precisa ser responsivo), custo ~1 leitura/min. Travado → pula a rodada
     // inteira (nenhuma análise, nenhuma ordem), mas o heartbeat segue vivo.
     let travado = false;
     let pedidoSupervisao = false;
+    let pedidoInventario;
     let modoVendas = null;
     // Só compara a marca de invalidação quando a LEITURA deu certo: falha de
     // rede não pode virar "a marca mudou" e jogar fora o estado de todos os
@@ -561,6 +608,10 @@ export async function iniciarOrquestrador() {
       // leitura que já acontece todo tick — um doc próprio custaria mais 1.440
       // leituras/dia só para um botão que se usa de vez em quando (V5.2).
       pedidoSupervisao = controle?.supervisao_solicitada === true;
+      // "Atualizar o inventário agora", botão da tela da Steam. Mesma carona,
+      // e por MARCA (um ISO) em vez de booleano: o bot não precisa escrever
+      // nada para "consumir" o pedido — basta lembrar qual marca já viu.
+      pedidoInventario = controle?.inventario_solicitado_em ?? null;
       // Liquidação (V8), mesma carona. Resolvido a cada tick porque a tolerância
       // do dia é função do relógio: virar o dia tem de mudar o número sem
       // ninguém reiniciar nada.
@@ -595,9 +646,17 @@ export async function iniciarOrquestrador() {
       invalidacaoVista = marcaInvalidacao;
     }
 
+    // Pedido manual de atualização do inventário: só vale quando a marca MUDOU
+    // em relação à que este processo já atendeu.
+    let forcarInventario = false;
+    if (pedidoInventario !== undefined) {
+      forcarInventario = inventarioPedidoVisto !== undefined && pedidoInventario !== inventarioPedidoVisto;
+      inventarioPedidoVisto = pedidoInventario;
+    }
+
     if (!travado) {
       try {
-        const resumo = await executarRodada({ modoVendas });
+        const resumo = await executarRodada({ modoVendas, forcarInventario });
         if (resumo.length > 0) {
           ultimaRodada = resumo.map((r) => `${r.plataforma}/${r.ativo}:${r.tipo}`).join(', ');
           log.info(`rodada concluída: ${ultimaRodada}`);

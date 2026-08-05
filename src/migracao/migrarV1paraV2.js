@@ -295,6 +295,74 @@ export async function garantirPlataformaTORO() {
 }
 
 /**
+ * Garante que a plataforma STEAM existe na árvore V2 (semeadura única, como
+ * garantirPlataformaTT/BN/TORO). Mercado da Comunidade Steam (skins do CS2)
+ * em MODO ASSISTIDO: a Steam tem API de LEITURA, mas nenhuma de execução —
+ * automatizar compra exigiria o cookie da conta do dono. O robô lê, analisa e
+ * RECOMENDA; quem compra e vende é ele, no site.
+ *
+ * Nasce SEM itens: o dono marca na seção Steam da dashboard quais itens do
+ * inventário devem ser analisados, e é a marcação que cria o ativo.
+ *
+ * A MOEDA é `BRLS` (carteira Steam), deliberadamente diferente de `BRL`: o
+ * saldo da carteira Steam não pode ser sacado, então somá-lo ao patrimônio ou
+ * compará-lo com o CDI seria mentira. Sem cotação em `global/cambio`, o código
+ * que consolida em reais já deixa esta moeda de fora sozinho — o isolamento é
+ * estrutural, não depende de ninguém lembrar de um flag.
+ *
+ * Nunca sobrescreve uma plataforma STEAM já existente (edições preservadas).
+ */
+export async function garantirPlataformaSTEAM() {
+  const existente = await obterPlataforma('STEAM');
+  if (existente) return { semeado: false };
+
+  const agora = new Date().toISOString();
+  await salvarPlataforma('STEAM', {
+    nome: 'Steam (modo assistido)',
+    ativa: true,
+    tipo: 'mercado',
+    conector: 'steam',
+    // ASSISTIDA: aprovação do Motor vira RECOMENDAÇÃO, nunca ordem.
+    assistida: true,
+    timezone: 'America/Sao_Paulo',
+    moeda: 'BRLS',
+    moeda_steam: 7, // código de moeda da API da Steam: 7 = BRL
+    // SteamID64 do dono (17 dígitos). Não é segredo — está na URL do perfil —,
+    // por isso fica aqui e não em `dados/api`: a dashboard precisa poder lê-lo
+    // e editá-lo, e o doc das credenciais é só-escrita pelo navegador (V7.1).
+    steam_id64: '',
+    appid: 730, // CS2
+    // Esta plataforma NÃO recebe as regras gerais: elas falam de RSI, MACD e
+    // candles, que não existem num mercado de skin. O texto dela é o template
+    // (semente `.md/regras_steam.md`). Nenhuma proteção do Motor muda com isso.
+    usaRegrasGerais: false,
+    // O mercado da Steam não fecha.
+    // Os três intervalos que o dono edita na seção Steam (minutos).
+    intervalos: { analise_minutos: 60, precos_minutos: 60, noticias_minutos: 30 },
+    criada_em: agora,
+  });
+  await salvarApiPlataforma('STEAM', {
+    api_key_ia: '',
+    steam_id64: '', // 17 dígitos; o inventário precisa estar PÚBLICO no perfil
+  });
+  // Carteira MANUAL zerada: `saldos()` lê daqui e o dono informa o saldo da
+  // carteira Steam pela dashboard.
+  await salvarEstadoPlataforma('STEAM', {
+    carteira_manual: { saldo_moeda: 0, saldos: {}, atualizada_em: agora },
+  });
+  // Template da plataforma: semente PRÓPRIA (`.md/regras_steam.md`), não a
+  // agnóstica dos demais (`promptBase.md`) — aquela fala de RSI, MACD e candles
+  // de 15 minutos, e aqui nada disso existe. Como esta plataforma nasce com
+  // `usaRegrasGerais: false`, este texto é a PRIMEIRA camada do prompt: se
+  // ficasse vazio, a IA analisaria skin sem instrução nenhuma. Editável na
+  // seção Steam da dashboard.
+  const regrasSteam = readFileSync(new URL('../../.md/regras_steam.md', import.meta.url), 'utf8');
+  await salvarTemplatePlataforma('STEAM', regrasSteam);
+  log.info('plataforma Steam semeada em modo assistido (sem itens — marque-os na seção Steam)');
+  return { semeado: true };
+}
+
+/**
  * Backfill ÚNICO e idempotente do campo `aberta_modo` nas posições
  * (V5_2_Plan.MD §4.2): posições de antes da V5.2 não têm o campo e ficariam
  * fora da query nova de posições abertas. Percorre TODAS as posições de todos

@@ -592,6 +592,74 @@ enviar ordem. Por isso a plataforma TORO funciona em **modo assistido**:
 
 ---
 
+## 8.4 Steam — skins do CS2 (modo assistido)
+
+A Steam **tem API para LER** (preço e inventário) e **nenhuma para comprar ou
+vender**. Automatizar a compra exigiria dar ao robô o cookie da sua conta, o que
+arrisca a conta — então aqui ele **só analisa e recomenda**, e quem executa é
+você, no site da Steam. Tudo fica na tela **🎮 Steam** do menu.
+
+**Antes de começar, duas coisas do seu lado:**
+
+1. Deixe o **inventário do CS2 público** no perfil da Steam (Perfil → Editar →
+   Privacidade → Inventário: Público). Sem isso o robô não enxerga nada.
+2. Pegue o seu **SteamID64** — é o número de 17 dígitos que aparece na URL do
+   seu perfil — e cole no campo da seção Steam.
+
+### O que você vê e o que decide
+
+- **Todos os itens do inventário aparecem**, com foto, quantidade e preço atual.
+  O total soma só os que têm preço no mercado.
+- **O check "analisar com IA" é seu controle de custo.** Marcado, o item vira um
+  ativo de verdade: a IA analisa, recomenda e o histórico dele começa. Não
+  marcado, ele fica só mostrando o valor, sem gastar nada. Desmarcar apenas
+  desliga — o histórico do item continua guardado.
+- **Os três tempos** (análise, preços, atualizações do CS2) são separados porque
+  custam coisas diferentes: análise gasta IA; preço gasta uma consulta por item
+  (a Steam corta quem passa de ~20 por minuto); procurar update é uma consulta
+  só. Mínimo de 15 minutos em cada.
+
+### O número que mais importa: a taxa é ~15%
+
+A Steam cobra ~15% na venda. Você compra um item por R$ 100 e **só volta ao zero
+a zero se vender por R$ 115**. Não existe operação rápida que pague essa conta —
+por isso o prompt da Steam manda mirar em pelo menos +20%, e "AGUARDAR" é a
+resposta certa quase sempre. Ficar parado custa zero; girar custa caro.
+
+Outro ponto: **o dinheiro fica preso na carteira Steam** (não dá para sacar). Por
+isso ele NÃO entra no seu patrimônio consolidado nem no comparativo com o CDI —
+seria misturar dinheiro que você pode usar com dinheiro que você não pode.
+
+### Atualizações do CS2 e alertas de preço
+
+- **O robô acompanha os anúncios oficiais do jogo.** Quando sai um update, chega
+  aviso no Telegram e a nota vai para a análise da IA. Num mercado de skin isso
+  pesa mais que qualquer indicador: case nova, operação e mudança de drop movem
+  o preço. Uma notícia nova também força uma análise na hora, mesmo que o preço
+  ainda não tenha se mexido.
+- **Alerta de preço-alvo**: escolha um item, defina "avise se cair abaixo de X"
+  e/ou "se subir acima de Y". Funciona para **qualquer** item, marcado ou não, e
+  não gasta IA. O aviso sai **uma vez por travessia**: item parado abaixo do
+  alvo não vira mensagem toda hora, e o alerta se rearma sozinho quando o preço
+  volta.
+
+### Registrar o que você comprou ou vendeu
+
+Igual à Toro: no card do item marcado, clique em **"ver análise e registrar
+operação →"**. Lá estão a recomendação da IA, as posições abertas e o formulário
+de registro. Registre com o preço que você de fato pagou — é ele que define se a
+venda dá lucro.
+
+**O que o robô NUNCA faz aqui:** enviar ordem. Nem compra, nem venda, nem por
+engano — o código recusa a operação antes de tentar.
+
+### Por que não tem gráfico de RSI, MACD e afins
+
+Porque este mercado não fornece histórico de preço. O robô então **guarda o preço
+a cada coleta e monta a série sozinho**: em um dia ele já compara com ontem, em
+uma semana com a semana passada. Enquanto uma janela não estiver coberta, ela
+aparece como desconhecida — nunca como "0%", que seria mentira.
+
 ## 8.5 Avisos no Telegram
 
 O robô te manda mensagem quando algo acontece. **Não usa IA** — é só formatação

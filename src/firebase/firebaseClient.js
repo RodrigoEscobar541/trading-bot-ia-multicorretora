@@ -370,6 +370,9 @@ const ENV_FALLBACK_API = {
   },
   BN: { api_key_ia: 'GEMINI_API_KEY', bn_api_key: 'BN_API_KEY', bn_api_secret: 'BN_API_SECRET' },
   TORO: { api_key_ia: 'GEMINI_API_KEY', brapi_token: 'BRAPI_TOKEN' },
+  // O SteamID64 não é segredo (é público no perfil), mas mora com as
+  // credenciais por ser dado de conta — e assim ganha o mesmo fallback local.
+  STEAM: { api_key_ia: 'GEMINI_API_KEY', steam_id64: 'STEAM_ID64' },
 };
 
 // ------------------------------------------------------------------ caminhos V2
@@ -785,6 +788,86 @@ export async function salvarEstadoPlataforma(plataformaId, parcial) {
   await exigirBackend().salvarDoc(colDadosPlataforma(plataformaId), 'estado', parcial);
 }
 
+/**
+ * Retrato do INVENTÁRIO da plataforma (doc `plataformas/{P}/dados/inventario`).
+ * Usado pelo modo assistido da Steam: o bot lê o inventário público do dono,
+ * grava a lista aqui e a dashboard só desenha — os endpoints da Steam não
+ * liberam CORS, então uma chamada direta do navegador falharia.
+ * Um documento só (não uma subcoleção): a tela o lê por inteiro, sempre.
+ */
+export const INVENTARIO_PADRAO = { itens: [], atualizado_em: null, erro: null };
+
+export async function obterInventarioPlataforma(plataformaId) {
+  const doc = await exigirBackend().obterDoc(colDadosPlataforma(plataformaId), 'inventario');
+  return { ...structuredClone(INVENTARIO_PADRAO), ...(doc ?? {}) };
+}
+
+/**
+ * Grava o retrato inteiro. `salvarDoc` mescla por CAMPO, mas um array é
+ * substituído por completo nos dois backends — e é disso que dependemos aqui:
+ * item que o dono vendeu precisa DESAPARECER da tela, não virar fantasma
+ * (mesma lição do "status atrasado é pior que status ausente", V7.0).
+ * Por isso os itens vivem num array só, nunca num mapa por id.
+ */
+export async function salvarInventarioPlataforma(plataformaId, { itens, erro = null }) {
+  const doc = {
+    itens: Array.isArray(itens) ? itens : [],
+    atualizado_em: new Date().toISOString(),
+    erro,
+  };
+  await exigirBackend().salvarDoc(colDadosPlataforma(plataformaId), 'inventario', doc);
+  return doc;
+}
+
+/**
+ * Notícias do JOGO da plataforma (doc `plataformas/{P}/dados/noticias`) —
+ * fase 2 da Steam. Guarda os anúncios oficiais já limpos, mais a lista de
+ * `gids` que o bot já viu: é ela, e não a data, que responde "isto é novo?"
+ * (a Valve edita notas antigas, e o título é sempre o mesmo).
+ */
+export const NOTICIAS_PADRAO = { itens: [], gids_vistos: [], atualizado_em: null, ultima_novidade_em: null };
+
+export async function obterNoticiasPlataforma(plataformaId) {
+  const doc = await exigirBackend().obterDoc(colDadosPlataforma(plataformaId), 'noticias');
+  return { ...structuredClone(NOTICIAS_PADRAO), ...(doc ?? {}) };
+}
+
+/** Grava o retrato inteiro (arrays são substituídos — ver `salvarInventarioPlataforma`). */
+export async function salvarNoticiasPlataforma(plataformaId, { itens, gids_vistos, ultima_novidade_em = null }) {
+  const doc = {
+    itens: Array.isArray(itens) ? itens : [],
+    gids_vistos: Array.isArray(gids_vistos) ? gids_vistos : [],
+    atualizado_em: new Date().toISOString(),
+    ultima_novidade_em,
+  };
+  await exigirBackend().salvarDoc(colDadosPlataforma(plataformaId), 'noticias', doc);
+  return doc;
+}
+
+/**
+ * Alertas de preço-alvo por item (doc `plataformas/{P}/dados/alertas`).
+ *
+ * DOIS donos, em campos separados de propósito: `itens` é escrito pela
+ * DASHBOARD (os alvos que o dono definiu) e `estado` pelo BOT (o "já avisei
+ * desta travessia"). Como o merge do Firestore é por campo, um nunca apaga o
+ * outro — e o estado precisa estar no banco, não em memória, senão cada deploy
+ * reenviaria os alertas já dados.
+ */
+export const ALERTAS_PADRAO = { itens: {}, estado: {}, atualizado_em: null };
+
+export async function obterAlertasPlataforma(plataformaId) {
+  const doc = await exigirBackend().obterDoc(colDadosPlataforma(plataformaId), 'alertas');
+  return { ...structuredClone(ALERTAS_PADRAO), ...(doc ?? {}) };
+}
+
+/** Só o BOT chama: grava o estado das travessias já avisadas. */
+export async function salvarEstadoAlertas(plataformaId, estado) {
+  await exigirBackend().salvarDoc(colDadosPlataforma(plataformaId), 'alertas', {
+    estado: estado ?? {},
+    atualizado_em: new Date().toISOString(),
+  });
+}
+
 // --------------------------------------------------------------------- ativos V2
 
 /** Todos os ativos da plataforma: [{ id, manifest, config }]. */
@@ -872,6 +955,26 @@ export async function salvarEstadoAtivo(plataformaId, ativoId, parcial) {
 }
 
 /** Estatísticas agregadas do ativo POR MODO ('simulacao' | 'real'). */
+/**
+ * Série de preço construída pelo PRÓPRIO bot (doc
+ * `plataformas/{P}/ativos/{A}/dados/serie_preco`), para mercados sem candle —
+ * hoje as skins da Steam. Um ponto é { t, p }: instante e preço, sem OHLC,
+ * porque inventar máxima/mínima a partir de amostras horárias seria fabricar
+ * precisão que não existe.
+ */
+export const SERIE_PRECO_PADRAO = { pontos: [], atualizado_em: null };
+
+export async function obterSeriePrecoAtivo(plataformaId, ativoId) {
+  const doc = await exigirBackend().obterDoc(colDadosAtivo(plataformaId, ativoId), 'serie_preco');
+  return { ...structuredClone(SERIE_PRECO_PADRAO), ...(doc ?? {}) };
+}
+
+export async function salvarSeriePrecoAtivo(plataformaId, ativoId, pontos) {
+  const doc = { pontos: Array.isArray(pontos) ? pontos : [], atualizado_em: new Date().toISOString() };
+  await exigirBackend().salvarDoc(colDadosAtivo(plataformaId, ativoId), 'serie_preco', doc);
+  return doc;
+}
+
 export async function obterEstatisticasAtivo(plataformaId, ativoId, modo = 'simulacao') {
   const doc = await exigirBackend().obterDoc(colDadosAtivo(plataformaId, ativoId), `estatisticas_${modo}`);
   return { ...ESTATISTICAS_PADRAO, ...(doc ?? {}) };

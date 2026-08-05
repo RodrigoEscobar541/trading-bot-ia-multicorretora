@@ -109,11 +109,16 @@ RECOMENDAÇÃO para o dono executar e registrar manualmente.
 | `src/posicoes/posicoes.js` | Posições independentes (lotes, §11.1) POR (plataforma, ativo): abertura/fechamento, ciclo de vida, lucro e preço mínimo por posição, reconciliação com o saldo do ativo (entrada externa → posição `externa`; saque → abate). |
 | `src/executor/executor.js` | Único ponto onde `modo_simulacao` (da config DO ATIVO) muda o fluxo. Fornece a carteira ativa, o contexto de execução (preço reconsultado + ordens abertas) e o patrimônio da plataforma; executa e registra operações/estatísticas. O **lucro REALIZADO** de uma venda REAL usa as taxas EFETIVAS da corretora (`lucroRealizadoVenda`, taxas absolutas): a de venda vem do fill **quando > 0** (senão cai para a estimativa da config); a de compra é a real gravada na posição (posição externa, sem taxa → estimativa da config). A validação pré-ordem do Motor segue na config conservadora (garante "nunca vender no prejuízo" ANTES de existir fill). |
 | `src/executor/simulador.js` | Execução fictícia contra a carteira virtual POR PLATAFORMA (`plataformas/{P}/dados/estado`): um caixa + um saldo por ativo. Venda sempre por lotes; espelha depósitos/saques reais (delta). |
-| `src/conectores/conector.js` | CONTRATO dos conectores + registro (`{ mb, tt, bn, toro }`). Interface: `precoAtual`, `precos` (lote), `candles`, `saldos`, `ordensAbertas`, `ordemMercado`, `aguardarFill` + o OPCIONAL `estadoMercado()` (pregão/feriados, para plataformas de bolsa). Plataforma nova = novo diretório implementando o contrato + 1 linha no registro. |
+| `src/conectores/conector.js` | CONTRATO dos conectores + registro (`{ mb, tt, bn, toro, steam }`). Interface: `precoAtual`, `precos` (lote), `candles`, `saldos`, `ordensAbertas`, `ordemMercado`, `aguardarFill` + o OPCIONAL `estadoMercado()` (pregão/feriados, para plataformas de bolsa). Plataforma nova = novo diretório implementando o contrato + 1 linha no registro. |
 | `src/conectores/mb/` | Conector do Mercado Bitcoin (API v4): `mbPublico.js` (ticker/tickers, candles, orderbook — sem autenticação) e `mbPrivado.js` (saldos de todos os símbolos, ordens a mercado, fills — API Token ID + Secret, Bearer cacheado). Par dinâmico (`BTC-BRL`, `ETH-BRL`, `SOL-BRL`…). |
 | `src/conectores/tt/` | Conector da Tastytrade (Open API, AÇÕES dos EUA em USD): `ttHttp.js` (base REST kebab-case, produção/sandbox, User-Agent obrigatório), `ttAuth.js` (OAuth2: refresh token permanente → access token ~15 min cacheado), `ttMarketData.js` (cotações REST `/market-data/by-type` em lote; candles via streamer DXLink/dxfeed em WebSocket EFÊMERO — Node >= 22) e `ttRest.js` (conta, saldos, posições, ordens com DRY-RUN para capturar as taxas da corretora, sessões de mercado `/market-time/sessions/current`). Compra por valor = `Notional Market` (fração de ação); venda = `Market` + `Sell to Close`. |
 | `src/nucleo/operacoesManuais.js` | Modo assistido (V6): drena a fila `operacoes_manuais` do ativo (escrita pela dashboard) no início de cada ciclo — COMPRA abre posição `manual` com o custo INFORMADO (régua do "nunca vender no prejuízo"); VENDA abate FIFO/por id, realiza o lucro (prejuízo do dono é aceito e registrado); DIVIDENDO (V6.3) é INFORMATIVO — valor = valor/ação × quantidade em carteira, soma só em `dividendos_recebidos` (não entra no lucro de trading, na renda × CDI nem no caixa). Mantém APENAS o SALDO DO ATIVO da `carteira_manual`: o **caixa (`saldo_moeda`) é informativo** e atualizado só pela dashboard — nenhuma operação do bot o altera (V6.3). Pedido inválido é marcado com erro e nunca trava a fila. |
 | `src/conectores/toro/` | Conector da Toro em MODO ASSISTIDO (B3, BRL): `brapiClient.js` (cotação/candles/dividendos via brapi.dev — token gratuito no header, 1 ticker por requisição, range calculado da quantidade de candles) e `conectorTORO.js` (contrato da V2: `saldos()` lê a `carteira_manual` do estado da plataforma; `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM — ordem nunca é enviada; extensão `dividendos(par)`). |
+| `src/conectores/steam/` | Conector do Mercado da Comunidade Steam em MODO ASSISTIDO (skins do CS2 — ROADMAP prioridade 4, fase 1 entregue em 2026-08-05): `steamPublico.js` (preço por item via `/market/priceoverview/` — UMA chamada por item, não há lote; inventário público via `/inventory/{steamid}/730/2`; leitura de dinheiro FORMATADO, slug do `market_hash_name` para id de documento, URL da imagem no CDN) e `conectorSTEAM.js` (contrato da V2: `saldos()` lê a `carteira_manual`; `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM; `candles()` LANÇA — este mercado não tem candle, e o histórico oficial exigiria cookie da conta do dono; extensões `inventario()` e `intervalos()`). A Steam TEM API de leitura e não tem de EXECUÇÃO — daí o modo assistido, por motivo diferente do da Toro. |
+| `src/nucleo/alertasPreco.js` | Alerta de preço-alvo por item (fase 5). É a forma BARATA de vigiar: não gasta chamada de IA, não abre posição e vale para qualquer item — marcado ou não. Pega carona nos preços que a rodada do inventário acabou de buscar (nenhuma consulta nova à Steam). A regra é **um aviso por TRAVESSIA, com rearme**: "abaixo de X" dispara ao tocar X e só volta a valer depois que o preço subir acima de X. Sem o rearme, item parado abaixo do alvo geraria um aviso por hora e o dono desligaria os avisos — o pior desfecho. O estado "já avisei" mora no BANCO, não em memória: o bot reinicia a cada deploy. Função pura: `avaliarAlertas`. NUNCA lança. |
+| `src/nucleo/seriePreco.js` | A série de preço que o BOT constrói sozinho, para mercados SEM candle (`usaIndicadores: false` — hoje as skins da Steam). Um ponto por coleta (`{ t, p }`, sem OHLC: inventar máxima/mínima a partir de amostras horárias seria fabricar precisão), no máximo 720 pontos (~30 dias) e no mínimo 30 min entre pontos — sem esse piso, um ativo de análise a cada 15 min encheria a série de ruído e o passado guardado cairia de 30 para 7 dias. **Janela que a série ainda não cobre volta `null`, nunca 0 e nunca "desde o começo disfarçado de 24 h"** — é a mesma distinção que cegou a métrica de assimetria na V8.1. Funções puras: `acrescentarPonto`, `resumirSerie`. NUNCA lança. |
+| `src/nucleo/noticiasJogo.js` | O "ouvinte" das ATUALIZAÇÕES do jogo (fase 2, 2026-08-05). Único ponto do projeto que consome API OFICIAL da Valve (`ISteamNews/GetNewsForApp` — sem chave, sem cookie). Num mercado de skin, notícia do jogo é o fundamento: case nova, operação e mudança de drop movem o preço mais que qualquer indicador — e são o único "dado de mercado" decente que este mercado tem, já que ele não dá candle. Mesmo gate por CAPACIDADE do orquestrador (`typeof conector.noticias === 'function'`). **A novidade é decidida pelo `gid`**, nunca pela data (a Valve edita notas publicadas) nem pelo título (é sempre "Counter-Strike 2 Update"). **A primeira leitura NÃO avisa nada** — sem memória do que já houve, 10 anúncios velhos viveriam como novidade. Sem novidade não há escrita. Funções puras: `deveConsultar`, `noticiasNovas`, `gidsAtualizados`. NUNCA lança. |
+| `src/nucleo/inventarioSteam.js` | Publica o retrato do INVENTÁRIO de uma plataforma para a dashboard (os endpoints da Steam não liberam CORS: o navegador não consegue lê-los, quem lê é o bot). O orquestrador o chama quando o conector tem `inventario()` — o gate é a CAPACIDADE, nunca o nome da plataforma. Três custos governam o desenho: o limite de ~20 chamadas/min da Steam (daí pausa entre preços e um LOTE por rodada, em rodízio), o tick serial do orquestrador (daí o teto de itens por rodada) e o orçamento de leituras (o relógio vive em MEMÓRIA — o tick de 1 min não lê nada; o doc só é tocado quando há retrato novo). Funções puras: `deveAtualizar`, `fatiaDoRodizio`, `mesclarPrecos` (preserva o preço de quem ficou fora da fatia, com `preco_em` dizendo de quando é), `totalDoInventario`. NUNCA lança: inventário é informação, não decisão. |
 | `src/conectores/bn/` | Conector da Binance (API Spot, cripto em BRL): `bnPublico.js` (ticker 24h/tickers em lote, candles `/klines`, filtros de símbolo `/exchangeInfo` cacheados, hora do servidor — sem autenticação) e `bnPrivado.js` (assinatura HMAC SHA256 + header `X-MBX-APIKEY`, offset de relógio com retry em `-1021`, saldos, ordens a mercado, fills). Compra por valor = `quoteOrderQty`; venda por quantidade TRUNCADA ao `stepSize` do par. A resposta `FULL` da ordem traz a comissão REAL de cada fill, convertida para a moeda da plataforma. Par SEM hífen (`BTCBRL`, `ETHBRL`…). |
 | `src/nucleo/relatorioDecisoes.js` | Mede as DECISÕES do sistema (V7 · análise) e manda pelo Telegram a cada 7 dias. Funções PURAS (`resumirOperacoes`, `consolidar`, `razaoRiscoRetorno`, `assimetriaRealizada`, `capturaDoPico`, `deltaDecisoes`, `formatarRelatorio`) + a orquestração que lê o Firestore. **Duas réguas de assimetria, e a ordem entre elas importa** (V8.1): `razaoRiscoRetorno` é a melhor (mede contra o risco ACEITO na entrada) mas exige `stop_loss_inicial`, gravado só desde a V6.6.2 — 0 dos 23 lotes fechados em 2026-07-25 o tinham; `assimetriaRealizada` usa só `lucro_liquido`, que todo lote tem desde a V1, e por isso responde HOJE. Nenhuma das duas cruza moedas. A TERCEIRA régua (V8.5) é `capturaDoPico` — quanto do avanço a saída levou (§10.6); ela mede a saída padrão, é proporção e não dinheiro, então consolida entre moedas. **Não usa IA e não muda nada da operação** — só lê e conta; a camada de IA virá por cima destes números. Custo: `operacoes desde X` (1 query/ativo) + os docs das posições citadas nas vendas (~90 leituras no parque atual). A distribuição COMPRAR/VENDER/AGUARDAR vem de `estado.decisoes_acumuladas` (contador que o `cicloAtivo` incrementa no doc que ele JÁ escreve todo ciclo — custo zero) e o relatório tira o DELTA entre dois retratos, em vez de varrer o histórico. Trabalho GLOBAL: só a instância primária. |
 | `src/notificacoes/telegram.js` | ÚNICO módulo que fala com a API do Telegram (V7). Avisos de compra, venda (com lucro/prejuízo e marcação de stop-loss), recomendação da plataforma assistida e problemas (quota da IA esgotada, corretora fora do ar), sem nenhuma IA envolvida. **Contrato: nunca lança** — notificação é acessório e não pode derrubar um ciclo nem impedir uma ordem; falha vira `log.aviso` e devolve `false`. Problemas têm trava anti-spam de 24 h POR CHAVE (`quota_ia:MB`, `conexao:BN`), com a trava rearmada pela notificação de recuperação. Config no doc `global/telegram` (via catálogo cacheado; fallback `.env`). |
@@ -209,6 +214,10 @@ IA-investidora/
 ├── .md/regras_gerais_venda.md  # SEMENTE das regras do MODO VENDAS (V8 — §10.5). SUBSTITUEM as de
 │                               # cima enquanto a liquidação estiver ligada: o analista deixa de
 │                               # procurar entrada e passa a procurar a melhor saída.
+├── .md/regras_steam.md         # SEMENTE do template da plataforma STEAM (skins do CS2). Ela nasce
+│                               # com `usaRegrasGerais: false`, então ESTE texto é a 1ª camada do
+│                               # prompt dela — as regras gerais falam de RSI, MACD e taxa de 0,1%,
+│                               # e aqui a taxa de venda é 15% e não existe candle nenhum.
 ├── README.md                   # instalação, deploy, decisões de implementação
 ├── ROADMAP.md                  # histórico das versões (inclui os planos de execução já consolidados)
 ├── .env.example                # nomes de variáveis (o .env real nunca é versionado)
@@ -229,7 +238,8 @@ IA-investidora/
 ├── src/
 │   ├── scheduler.js            # entrada: saúde + persistência + migração + orquestrador
 │   ├── nucleo/ (orquestrador.js, cicloAtivo.js, rendaReal.js, catalogo.js,
-│   │            operacoesManuais.js, relatorioDecisoes.js, supervisor.js)
+│   │            operacoesManuais.js, relatorioDecisoes.js, supervisor.js,
+│   │            inventarioSteam.js, noticiasJogo.js, seriePreco.js)
 │   ├── indicadores/ (rsi, stochRsi, macd, mediasMoveis, volume, volatilidade)
 │   ├── ia/ (iaClient.js, montadorPrompt.js, promptBase.md, validadorResposta.js,
 │   │        validadorSupervisao.js)
@@ -239,7 +249,8 @@ IA-investidora/
 │   ├── conectores/ (conector.js, mb/{conectorMB,mbPublico,mbPrivado}.js,
 │   │                tt/{conectorTT,ttHttp,ttAuth,ttRest,ttMarketData}.js,
 │   │                bn/{conectorBN,bnPublico,bnPrivado}.js,
-│   │                toro/{conectorTORO,brapiClient}.js)
+│   │                toro/{conectorTORO,brapiClient}.js,
+│   │                steam/{conectorSTEAM,steamPublico}.js)
 │   ├── migracao/migrarV1paraV2.js
 │   ├── firebase/firebaseClient.js
 │   └── utils/ (logger.js, formatador.js)
@@ -248,7 +259,7 @@ IA-investidora/
 │                      PURO e por isso testável fora do navegador)
 └── tests/ (indicadores, stochRsiCruzamento, regrasEngine, validadorResposta,
             iaClient, posicoes, simulador, migracaoV2, nucleo, catalogo,
-            conectorTT, conectorBN, conectorTORO, modoAssistido, rendaReal,
+            conectorTT, conectorBN, conectorTORO, conectorSTEAM, modoAssistido, rendaReal,
             telegram, relatorioDecisoes, supervisor, limiteLogin, modoVendas,
             resetarDados, camposDeMedicao, rules/firestoreRules)
 ```
@@ -269,6 +280,7 @@ IA-investidora/
     "preco_ultima_analise": 348800.00,
     "variacao_percentual": 0.34
   },
+  "//indicadores": "Em mercado SEM candle (`usaIndicadores: false` — skins da Steam) este bloco muda: rsi/macd/medias_moveis/volatilidade vão `null` EXPLÍCITO (a IA precisa saber que não existem, não supor que esqueceram de enviar), entram `unidades_vendidas_24h` e `preco_mediano`, e o cenário ganha `serie_preco` — a série que o próprio bot acumula, com variacao_24h/7d/30d e `null` em toda janela que ela ainda não cobre.",
   "indicadores": {
     "rsi": 58.2,
     "stoch_rsi": 0.62,
@@ -474,6 +486,10 @@ global (coleção)
 │   supervisão pega carona nesta leitura que já acontece todo tick, em vez de
 │   custar um doc próprio × 1.440 leituras/dia. O BOT limpa o flag antes de
 │   rodar, para um erro não repetir a chamada de IA a cada minuto.
+│   Carrega também `inventario_solicitado_em` — a MARCA do botão "atualizar
+│   agora" da seção Steam. Mesma carona, e por marca (um ISO) em vez de
+│   booleano: o bot não precisa escrever nada para consumir o pedido, basta
+│   lembrar qual marca já atendeu.
 │   V8.7: carrega também `estado_invalidado_em` — a marca que manda o
 │   orquestrador DESCARTAR o `dados/estado` que ele guarda em memória. Escrita
 │   só pelo `scripts/resetar-dados.mjs`: apagar os docs no banco não alcança a
@@ -519,7 +535,7 @@ global (coleção)
 │   leitura sem cegar a tela — ver §7.3)
 ├── telegram (doc V7, AVISOS: escrito pela DASHBOARD — `token_configurado`
 │   (sinalizador NÃO secreto: diz que existe token sem revelá-lo),
-│   `chat_id`, `ativo` e `eventos: { compra, venda, recomendacao, problema, relatorio, supervisao }`
+│   `chat_id`, `ativo` e `eventos: { compra, venda, recomendacao, problema, relatorio, supervisao, modo_vendas, noticia_jogo, alerta_preco }`
 │   (ausente = ligado). Lido pelo bot pelo CATÁLOGO cacheado — notificar é
 │   caminho quente e não pode custar leitura por evento. O bot manda uma
 │   confirmação "avisos ligados" na 1ª vez que vê a config válida. O RESULTADO
@@ -532,12 +548,46 @@ global (coleção)
     padrão 106). Lido pelo bot no recálculo da renda_real)
 
 plataformas (coleção)
-└── MB | TT | BN | TORO (doc — config da plataforma: nome, ativa, tipo,
+└── MB | TT | BN | TORO | STEAM (doc — config da plataforma: nome, ativa, tipo,
     │   conector, timezone, moeda, modelos_ia; plataformas de bolsa têm ainda
-    │   `pregao: { inicio, fim }` — janela heurística de fallback. TT, BN e
-    │   TORO são semeadas na inicialização, SEM ativos: o cadastro é pela
-    │   dashboard. TORO tem `assistida: true` — o robô só RECOMENDA (V6))
+    │   `pregao: { inicio, fim }` — janela heurística de fallback. STEAM tem ainda
+    │   `appid` (730 = CS2). TT, BN,
+    │   TORO e STEAM são semeadas na inicialização, SEM ativos: o cadastro é
+    │   pela dashboard. TORO e STEAM têm `assistida: true` — o robô só
+    │   RECOMENDA (V6). STEAM carrega ainda `steam_id64` (o dono do inventário —
+    │   NÃO é segredo, está na URL do perfil, e por isso mora aqui e não em
+    │   `dados/api`, que o navegador não consegue ler), `moeda_steam` (código de
+    │   moeda da API: 7 = BRL) e `intervalos: { analise_minutos, precos_minutos,
+    │   noticias_minutos }` — os três ritmos que o dono edita na seção Steam,
+    │   com piso de 15 min cada. São TRÊS porque custam coisas diferentes: uma
+    │   chamada de IA por item marcado, uma consulta HTTP por item de preço e
+    │   uma consulta só para procurar atualização do jogo)
     ├── dados (subcoleção)
+    │   ├── inventario   (doc, plataformas com inventário — hoje só a STEAM:
+    │   │                 retrato publicado pelo BOT com TODOS os itens
+    │   │                 ({ market_hash_name, id, nome, icon_url, imagem,
+    │   │                 negociavel, quantidade, preco, preco_em, volume_24h,
+    │   │                 valor_total }), mais atualizado_em e erro. A dashboard
+    │   │                 só DESENHA: os endpoints da Steam não liberam CORS, e
+    │   │                 uma chamada do navegador falharia. Os itens vivem num
+    │   │                 ARRAY, nunca num mapa por id — array é substituído
+    │   │                 inteiro na gravação, e é assim que item vendido
+    │   │                 desaparece da tela em vez de virar fantasma. Não há
+    │   │                 campo "analisado": quem responde isso é o ATIVO existir
+    │   │                 e estar ligado)
+│   ├── alertas      (doc, alertas de preço-alvo por item — fase 5 da Steam.
+│   │                 DOIS donos em campos separados de propósito: `itens`
+│   │                 ({ <id>: { abaixo, acima } }) é escrito pela DASHBOARD e
+│   │                 `estado` ({ <id>: { disparado_abaixo, disparado_acima } })
+│   │                 pelo BOT. O merge do Firestore é por campo, então um nunca
+│   │                 apaga o outro. Alvo vazio grava `null` — merge não remove
+│   │                 chave de mapa)
+│   ├── noticias     (doc, plataformas com notícias — hoje só a STEAM: os
+│   │                 anúncios OFICIAIS do jogo já limpos de BBCode e cortados
+│   │                 ({ gid, titulo, url, data, conteudo }), mais `gids_vistos`
+│   │                 — a memória do que já foi avisado, que é o que responde
+│   │                 "isto é novo?" — e `ultima_novidade_em`. Escrito só quando
+│   │                 há novidade)
     │   ├── api_meta     (doc: espelho SEM segredo das credenciais — só os 4
     │   │                 últimos caracteres de cada campo. Escrito pelo BOT;
     │   │                 é o que a dashboard lê, já que `api` virou ilegível
@@ -548,7 +598,8 @@ plataformas (coleção)
     │   │                 tt_client_secret, tt_refresh_token, tt_account_id,
     │   │                 tt_ambiente; BN: bn_api_key/bn_api_secret; TORO:
     │   │                 brapi_token — lidas SÓ pelo conector/iaClient;
-    │   │                 mascaradas na dashboard)
+    │   │                 mascaradas na dashboard. STEAM não tem credencial:
+    │   │                 tudo que ela usa é público)
     │   ├── template     (doc: { conteudo, versao, atualizado_em } — prompt
     │   │                 padrão de TODOS os ativos da plataforma)
     │   └── estado       (doc: carteira_virtual { saldo_moeda, saldos },
@@ -577,6 +628,12 @@ plataformas (coleção)
 │   │                           da IA, base do relatório semanal; pega carona
 │   │                           neste save, custo zero) —
             │   │                           ESCRITO SÓ pelo bot, nunca pela dashboard)
+            │   ├── serie_preco            (doc: a série que o BOT constrói, só nos
+            │   │                           ativos com `usaIndicadores: false` —
+            │   │                           { pontos: [{ t, p }], atualizado_em }.
+            │   │                           Existe porque o mercado da Steam não tem
+            │   │                           candle e o único endpoint com histórico
+            │   │                           exigiria cookie da conta do dono)
             │   ├── estatisticas_simulacao (doc — agregados do modo)
             │   ├── estatisticas_real      (doc — idem; nunca se misturam;
             │   │                           V6: + dividendos_recebidos — total
@@ -632,6 +689,8 @@ plataformas (coleção)
     "par": "BTC-BRL", "mercado24h": true, "permiteDividendos": false,
     "usaContexto": true, "usaPromptPersonalizado": true,
     "usaTemplatePlataforma": true, "usaSupervisao": true, "intervaloPadrao": 15,
+    "//usaIndicadores": "false = mercado SEM candle (skins da Steam): o ciclo não pede candle, os indicadores vão null EXPLÍCITO no JSON e o bot passa a manter a série de preço própria (seriePreco.js)",
+    "//usaNoticias": "false tira a camada de notícias do jogo do prompt deste ativo",
     "resetPadraoDias": 7, "versaoPrompt": 1
   },
   "config": {
@@ -704,7 +763,7 @@ plataformas (coleção)
 
 ## 8. Conectores de Plataforma
 
-- Contrato em `src/conectores/conector.js`; registro `{ mb, tt, bn }`.
+- Contrato em `src/conectores/conector.js`; registro `{ mb, tt, bn, toro, steam }`.
   **Nenhum módulo fora de `src/conectores/` chama a API de uma corretora.**
 - Interface: `precoAtual(par)`, `precos(pares)` (tickers em LOTE — uma chamada
   para o patrimônio da plataforma), `candles(par, res, n)`, `saldos()`
@@ -746,6 +805,31 @@ plataformas (coleção)
   `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM — em plataforma
   `assistida` o executor nem os chama (aprovação vira recomendação). Extensão
   `dividendos(par)` → proventos em dinheiro normalizados.
+- **STEAM — notícias do jogo (fase 2)**: `noticias()` consome
+  `api.steampowered.com/ISteamNews/GetNewsForApp/v2/` — API **oficial** da
+  Valve, sem chave. `maxlength=0` traz a nota inteira porque o corte é NOSSO e
+  vem depois da limpeza do BBCode (cortar antes deixaria tag aberta no meio).
+  Filtra pelo canal oficial (`feedname: steam_community_announcements`). O
+  formato real reservou três armadilhas, todas com teste de regressão: a Valve
+  escapa colchete literal (`\[ GAMEPLAY ]`), fecha item de lista com `[/*]`
+  (que não é letra e escapa de qualquer regra genérica de tag) e embrulha o
+  texto do item em `[p]` — por isso a ordem da limpeza importa: bloco vira
+  quebra ANTES de `[*]` virar marcador.
+- **STEAM (modo assistido — Mercado da Comunidade Steam, skins do CS2)**: os
+  endpoints são os mesmos que a página do mercado usa (não oficiais, mas
+  públicos e SEM login): `/market/priceoverview/` (menor preço, mediana e
+  volume 24h de UM item — não existe lote) e `/inventory/{steamid}/730/2` (o
+  inventário, que precisa estar PÚBLICO no perfil). O limite é ~20 chamadas por
+  minuto. **Não usamos `/market/pricehistory/`**, o único que traria série
+  histórica, porque é o único que exige o cookie de sessão da conta do dono —
+  decisão registrada: a série passa a ser a que o próprio bot acumular.
+  `candles()` LANÇA em vez de devolver array vazio, que viraria indicador
+  falso. Não há API de EXECUÇÃO: `ordemMercado`/`aguardarFill` LANÇAM, e o
+  executor nem os chama (`assistida: true`). Preço vem FORMATADO em texto
+  ("R$ 1.234,56"), lido pela regra da última ocorrência do separador.
+  Moeda `BRLS` (carteira Steam) — deliberadamente ≠ `BRL`: saldo de carteira
+  Steam não pode ser sacado, e sem cotação em `global/cambio` o código que
+  consolida em reais já o deixa de fora sozinho.
 - **Todas as ordens são a mercado** (nunca limitadas). Antes de qualquer ordem,
   o Motor reconfirma saldo, ordens abertas e compara o preço da análise com o
   preço reconsultado (regra 3 da seção 10). Em plataforma ASSISTIDA não há
@@ -771,8 +855,15 @@ plataformas (coleção)
   1) REGRAS GERAIS (doc `global/regras_gerais` — regras simples e diretas,
   prioridade máxima, valem para tudo); 2) template da plataforma; 3) identidade
   do ativo; 4) prompt específico do ativo; 5) **camada da supervisão semanal**
-  (doc `global/supervisao`, escrito pela IA supervisora — §9.1); 6) contexto do
-  usuário com data. O CONTRATO_SAIDA blindado segue SEMPRE por último.
+  (doc `global/supervisao`, escrito pela IA supervisora — §9.1); 6) **notícias
+  do jogo** (plataformas que as têm — hoje a Steam); 7) contexto do usuário com
+  data. O CONTRATO_SAIDA blindado segue SEMPRE por último.
+  **Exceção da camada 1**: plataforma com `usaRegrasGerais: false` (hoje só a
+  STEAM) NÃO recebe as regras gerais — elas descrevem um mercado que não é o
+  dela. No lugar entra o template dela. Isso **não afrouxa proteção nenhuma**:
+  "nunca vender no prejuízo", stop-loss e orçamento vivem no Motor, em código.
+  A LIQUIDAÇÃO (V8) ignora o flag de propósito: é ordem do dono e vale em toda
+  plataforma.
   Conceitos que exigem dados que a IA não recebe (candles, suportes, padrões
   gráficos) NÃO entram no prompt; viram código primeiro (indicadores/Motor).
 
@@ -1166,8 +1257,27 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
 - **Navegação**: menu lateral (hambúrguer no mobile) — Visão geral, "Regras
   gerais da IA" (editor do doc global), **"Supervisão semanal"** (V7.2), um item
   por ativo (com indicador ligado/desligado) e "Plataforma e template" por
-  plataforma. Rotas no hash (`#/geral`, `#/regras`, `#/supervisao`,
+  plataforma. Rotas no hash (`#/geral`, `#/regras`, `#/supervisao`, `#/steam`,
   `#/ativo/MB/BTC`, `#/plataforma/MB`).
+- **Tela "Steam" (`#/steam`)**: a plataforma STEAM tem tela PRÓPRIA e NÃO
+  aparece na lista de plataformas — o que importa nela é o inventário, não
+  chaves de corretora. Mostra os tiles (itens, valor, quantos são analisados,
+  quando atualizou), a grade de itens com FOTO (do CDN da Steam, via
+  `icon_url` — nada é hospedado por nós), a configuração (SteamID64 + os três
+  intervalos) e o editor do prompt do agente da Steam. **Todos os itens
+  aparecem; um CHECK por item decide quem a IA analisa** — marcar CRIA o ativo
+  (taxa de venda 13,04%, que é o "15% por cima" da Steam, fazendo o preço
+  mínimo de venda lucrativa ser compra × 1,15), desmarcar apenas o DESLIGA
+  (o histórico do item é dele). O botão "atualizar agora" grava
+  `inventario_solicitado_em` em `global/controle` — a mesma carona do "rodar
+  supervisão agora", sem leitura nova no tick. Item MARCADO ganha um link para a
+  tela de ativo dele (`#/ativo/STEAM/{id}`) — é lá que ficam a recomendação da
+  IA, as posições e o formulário para registrar a compra/venda feita na Steam,
+  tudo reaproveitado do modo assistido da V6.
+- **Moeda fora do padrão ISO**: `fmtMoeda` cai num formatador manual quando o
+  `Intl` recusa o código (a carteira Steam é `BRLS`, de 4 letras). Sem isso,
+  abrir a tela de um item derrubaria a página inteira com um `RangeError` — o
+  bot já era resiliente a isso (`formatarDinheiro`), a dashboard não era.
 - **Tela da supervisão semanal** (V7.2): quando rodou, qual versão está em
   vigor, o modelo usado e a confiança; o **diagnóstico** da última rodada, o que
   mudou no prompt do analista e as observações sobre posições abertas; o editor
@@ -1255,7 +1365,7 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
 ```bash
 npm start        # bot 24/7 (carrega .env se existir)
 npm run test:rules  # regras do Firestore contra o emulador (exige Java) — 9 casos
-npm test         # 443 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado)
+npm test         # 510 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO/STEAM, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado; STEAM fase 1 (2026-08-05): dinheiro formatado lido certo nas duas convenções (e separador único com 3 casas é MILHAR, não decimal — errar isso erraria o preço por mil vezes), preço ilegível vira null e nunca zero, itens iguais viram UMA linha com quantidade somada, item não negociável ENTRA na lista marcado, 429 INTERROMPE a varredura de preços, o rodízio dá a volta na lista, o preço de quem ficou fora da fatia é preservado com a data dele, o retrato NÃO guarda se o item é analisado, Steam fora do ar não lança e mantém o retrato anterior, e o conector NUNCA envia ordem nem devolve candle vazio; STEAM fase 2 (2026-08-05): a novidade sai do `gid` e nunca da data ou do título, a PRIMEIRA leitura não avisa nada, sem novidade não há escrita no banco, feed de site parceiro fica de fora, o ouvinte respeita o intervalo do dono, Steam fora do ar não lança — e o BBCode REAL das notas do CS2 (colchete escapado, `[/*]`, `[p]` dentro do item de lista) vira texto legível, com o teste montado a partir de uma nota de produção; STEAM fase 3 (2026-08-05): o ciclo de um ativo `usaIndicadores: false` NÃO pede candle e manda os indicadores como null EXPLÍCITO, a série própria ignora ponto cedo demais e responde `null` — nunca 0 — na janela que ainda não cobre, a plataforma da Steam não recebe as regras gerais **enquanto todas as outras continuam recebendo** (o caso que protege o sistema inteiro), template vazio ali não cai na semente de ativo financeiro, a liquidação ignora o flag, a camada de notícias entra antes do CONTRATO_SAIDA, e notícia nova FURA o filtro de variação uma vez; ALERTA DE PREÇO-ALVO fase 5 (2026-08-05): dispara UMA vez por travessia e rearma quando o preço volta — item parado abaixo do alvo não vira aviso por hora —, preço exatamente no alvo conta como cruzado, item sem preço legível não dispara nada (null não é zero), e o alvo do dono nunca é tocado pelo estado que o bot grava no mesmo documento)
 ```
 
 Requisito: **Node >= 22** (o conector da Tastytrade usa o WebSocket nativo
@@ -1466,6 +1576,9 @@ manter o sistema, e o custo de um detalhe a menos é alto.
   `.env`/Firestore). Já houve incidente com chaves coladas no `.env.example`.
 - Mudanças ambíguas de regra de negócio: perguntar ao usuário antes de assumir um comportamento.
 - Comentários, mensagens e documentação em PT-BR, seguindo o estilo dos módulos existentes.
+
+---
+
 
 ## Git Commit Convention
 

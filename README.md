@@ -4,11 +4,14 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-informational)](https://nodejs.org)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-informational)](LICENSE)
 
-Plataforma autônoma de análise e execução de operações que roda 24/7 em quatro
-corretoras ao mesmo tempo — **Mercado Bitcoin** e **Binance** (cripto em BRL),
-**Tastytrade** (ações dos EUA em USD) e **Toro** (ações/FIIs da B3, em modo
-assistido). Para cada ativo o sistema coleta dados de mercado, calcula os
-indicadores técnicos no próprio código, monta um prompt em camadas para o
+Plataforma autônoma de análise e execução de operações que roda 24/7 em cinco
+mercados ao mesmo tempo — **Mercado Bitcoin** e **Binance** (cripto em BRL),
+**Tastytrade** (ações dos EUA em USD), **Toro** (ações/FIIs da B3) e o **Mercado
+da Comunidade Steam** (skins de CS2) — os dois últimos em modo assistido, em que
+o robô analisa e recomenda mas nunca envia ordem. Para cada ativo o sistema
+coleta dados de mercado, calcula os indicadores técnicos no próprio código
+(ou constrói a série de preço sozinho, onde o mercado não fornece histórico),
+monta um prompt em camadas para o
 **Gemini** decidir `COMPRAR` / `VENDER` / `AGUARDAR`, e submete essa decisão a um
 **Motor de Regras determinístico** que tem sempre a última palavra.
 
@@ -16,8 +19,8 @@ indicadores técnicos no próprio código, monta um prompt em camadas para o
 | :--- | :--- |
 | **Stack** | Node.js 22+ · JavaScript puro (ESM) · Firestore · Firebase Hosting/Auth · Gemini API |
 | **Dependências de runtime** | **uma** (`firebase-admin`) — HTTP, WebSocket, assinatura HMAC e o painel web são todos sem framework |
-| **Testes** | **443**, em `node:test` — sem Jest, sem mocks de biblioteca |
-| **Tamanho** | ~10.800 linhas em `src/` (42 módulos) · ~7.200 de teste · ~3.900 no painel |
+| **Testes** | **510**, em `node:test` — sem Jest, sem mocks de biblioteca |
+| **Tamanho** | ~12.200 linhas em `src/` (48 módulos) · ~8.100 de teste · ~4.500 no painel |
 | **Em produção** | processo único numa VPS sob `pm2`, com deploy automático e heartbeat visível no painel |
 
 > ℹ️ Esta é a **cópia pública** de um projeto pessoal em operação. Credenciais,
@@ -113,13 +116,13 @@ src/
 ├── regras/            # regrasEngine: a última palavra antes de qualquer execução
 ├── posicoes/          # lotes independentes por (plataforma, ativo)
 ├── executor/          # executor (real ou simulado) + simulador (carteira virtual)
-├── conectores/        # contrato + mb/ bn/ tt/ toro/ — nada fora daqui fala com corretora
+├── conectores/        # contrato + mb/ bn/ tt/ toro/ steam/ — nada fora daqui fala com o mercado
 ├── ia/                # iaClient (Gemini), montador do prompt em camadas, validadores
 ├── notificacoes/      # telegram — e o contrato de NUNCA lançar
 ├── firebase/          # única camada de persistência (Firestore ou memória)
 └── utils/             # logger com redação de segredos, formatadores
 dashboard/public/      # painel web: SVG puro para os gráficos, sem framework
-tests/                 # 443 testes em node:test
+tests/                 # 510 testes em node:test
 .md/                   # as sementes dos prompts — versionadas como código
 ```
 
@@ -130,7 +133,7 @@ projeto Firebase. Passo a passo completo em **[INSTALACAO.md](INSTALACAO.md)**.
 
 ```bash
 npm install
-npm test              # 443 testes, sem precisar de credencial nenhuma
+npm test              # 510 testes, sem precisar de credencial nenhuma
 
 cp .env.example .env  # preencha as chaves (nunca versionado)
 npm start             # bot 24/7

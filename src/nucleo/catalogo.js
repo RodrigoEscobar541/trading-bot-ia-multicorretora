@@ -26,6 +26,7 @@ import {
   obterRegrasGerais,
   obterRegrasGeraisVenda,
   obterTemplatePlataforma,
+  obterNoticiasPlataforma,
   obterPromptAtivo,
   obterContextoAtivo,
   obterSupervisao,
@@ -98,6 +99,18 @@ async function templateCache(plataformaId, agoraMs) {
 }
 
 /**
+ * Notícias do JOGO — também por PLATAFORMA: as atualizações do CS2 valem para
+ * todas as skins, e guardá-las por ativo faria N itens lerem N vezes o mesmo
+ * documento (o erro corrigido em 2026-07-26 — ver CLAUDE.md §2.1).
+ * O bot escreve este doc; quem o escreve não precisa invalidar o catálogo,
+ * porque um atraso de até 5 min para a nota entrar no prompt é irrelevante
+ * (o AVISO já saiu na hora, por outro caminho).
+ */
+async function noticiasCache(plataformaId, agoraMs) {
+  return lembrar(`noticias/${plataformaId}`, () => obterNoticiasPlataforma(plataformaId), agoraMs);
+}
+
+/**
  * As camadas EDITÁVEIS do prompt final de um ativo (cacheado):
  * { regrasGerais, regrasGeraisVenda, template, promptAtivo, supervisao, contexto }.
  * As versões dos docs seguem indo para o histórico de cada análise, como sempre.
@@ -111,9 +124,10 @@ async function templateCache(plataformaId, agoraMs) {
  * camada antiga por até 5 minutos.
  */
 export async function camadasPromptCache(plataformaId, ativoId, { agoraMs = Date.now() } = {}) {
-  const [globais, template, doAtivo] = await Promise.all([
+  const [globais, template, noticias, doAtivo] = await Promise.all([
     globaisPromptCache(agoraMs),
     templateCache(plataformaId, agoraMs),
+    noticiasCache(plataformaId, agoraMs),
     lembrar(`prompt/${plataformaId}/${ativoId}`, async () => {
       const [promptAtivo, contexto] = await Promise.all([
         obterPromptAtivo(plataformaId, ativoId),
@@ -122,7 +136,7 @@ export async function camadasPromptCache(plataformaId, ativoId, { agoraMs = Date
       return { promptAtivo, contexto };
     }, agoraMs),
   ]);
-  return { ...globais, template, ...doAtivo };
+  return { ...globais, template, noticias, ...doAtivo };
 }
 
 /** Configuração do supervisor semanal (cacheado — lido no loop do orquestrador). */

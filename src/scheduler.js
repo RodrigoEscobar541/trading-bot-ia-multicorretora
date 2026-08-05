@@ -20,6 +20,7 @@ import {
   garantirPlataformaTT,
   garantirPlataformaBN,
   garantirPlataformaTORO,
+  garantirPlataformaSTEAM,
   backfillPosicoesAbertaModo,
 } from './migracao/migrarV1paraV2.js';
 import { iniciarOrquestrador } from './nucleo/orquestrador.js';
@@ -67,6 +68,7 @@ async function principal() {
       await garantirPlataformaTT();
       await garantirPlataformaBN();
       await garantirPlataformaTORO();
+      await garantirPlataformaSTEAM();
       await backfillPosicoesAbertaModo(); // V5.2 — depois da migração (posições da V1 também precisam)
       // Segurança (2026-07-25): tira o token do Telegram do doc que o navegador
       // consegue ler e o move para `global/telegram_token`. Idempotente.

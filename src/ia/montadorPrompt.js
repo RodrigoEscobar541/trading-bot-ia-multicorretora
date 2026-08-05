@@ -142,20 +142,32 @@ const CONTRATO_SAIDA = [
  *   agora        — Date de referência para a validade (padrão: agora)
  * @returns {{ texto: string, partes: string[], pedeValidadeContexto: boolean }}
  */
-export function montarPromptSistema({ manifest, regrasGerais = null, regrasGeraisVenda = null, template = null, promptAtivo = null, supervisao = null, contexto = null, modoVendas = null, agora = new Date() }) {
+export function montarPromptSistema({ manifest, plataforma = null, regrasGerais = null, regrasGeraisVenda = null, template = null, promptAtivo = null, supervisao = null, noticias = null, contexto = null, modoVendas = null, agora = new Date() }) {
   const partes = [];
   const liquidando = modoVendas?.ativo === true;
+  // Plataforma cujo mercado é de outra natureza (`usaRegrasGerais: false` —
+  // hoje as skins da Steam) NÃO recebe as regras gerais: elas falam de RSI,
+  // MACD, candles de 15 minutos e taxa de 0,1%, e nada disso existe lá. No
+  // lugar delas vale o template da plataforma, escrito pelo dono.
+  // Isto NÃO afrouxa proteção nenhuma: "nunca vender no prejuízo", stop-loss,
+  // folga do chão e orçamento vivem no Motor de Regras, em código — o prompt
+  // nunca foi o que segurava isso. O que muda é só o texto que a IA lê.
+  // A LIQUIDAÇÃO (V8) ignora este flag de propósito: ela é uma ordem do dono
+  // para a carteira inteira, e vale em toda plataforma.
+  const semRegrasGerais = plataforma?.usaRegrasGerais === false && !liquidando;
 
   // Regras gerais SEMPRE primeiro: têm prioridade sobre todas as outras camadas.
   // No MODO VENDAS (V8) elas são SUBSTITUÍDAS pelas regras de liquidação — não
   // somadas. Empilhar as duas entregaria à IA um prompt que manda comprar na
   // correção e liquidar tudo ao mesmo tempo; prompt contraditório não é
   // conservadorismo, é decisão pior.
-  partes.push(
-    liquidando
-      ? (regrasGeraisVenda?.conteudo?.trim() || regrasGeraisVendaSemente().trim())
-      : (regrasGerais?.conteudo?.trim() || regrasGeraisSemente().trim()),
-  );
+  if (!semRegrasGerais) {
+    partes.push(
+      liquidando
+        ? (regrasGeraisVenda?.conteudo?.trim() || regrasGeraisVendaSemente().trim())
+        : (regrasGerais?.conteudo?.trim() || regrasGeraisSemente().trim()),
+    );
+  }
 
   // O prazo e a tolerância de HOJE, em texto, logo depois das regras: o JSON do
   // cenário também os leva, mas quem lê a §2 das regras de liquidação precisa
@@ -177,7 +189,12 @@ export function montarPromptSistema({ manifest, regrasGerais = null, regrasGerai
 
   if (manifest.usaTemplatePlataforma !== false) {
     const conteudo = template?.conteudo?.trim();
-    partes.push(conteudo || templateSemente().trim());
+    // A semente (`promptBase.md`) é o prompt genérico de ativo financeiro: fala
+    // de RSI, MACD e candles. Numa plataforma que dispensou as regras gerais
+    // justamente por não ter nada disso, cair nela seria pior que ficar sem
+    // texto — a IA receberia instruções sobre dados que não vão chegar.
+    if (conteudo) partes.push(conteudo);
+    else if (!semRegrasGerais) partes.push(templateSemente().trim());
   }
 
   partes.push(
@@ -217,6 +234,33 @@ export function montarPromptSistema({ manifest, regrasGerais = null, regrasGerai
           'Elas CALIBRAM o seu julgamento em pontos onde ele falhou; elas não revogam nada. ' +
           'Em qualquer conflito com as regras gerais ou com o formato de saída, as regras gerais e o formato prevalecem.\n\n' +
           recorte,
+      );
+    }
+  }
+
+  // Atualizações do JOGO (fase 2/3 da Steam). Entra DEPOIS do prompt do ativo e
+  // ANTES do contexto do dono, na mesma lógica das outras camadas: fato do
+  // mundo primeiro, opinião do dono por último.
+  //
+  // Num mercado de skin isto não é enfeite — é o fundamento: case nova,
+  // operação e mudança de drop movem o preço mais que qualquer outra coisa. A
+  // IA continua sem acessar rede: o texto foi buscado pelo bot (conector) e
+  // chega aqui pronto, como todo o resto.
+  if (manifest.usaNoticias !== false) {
+    const itens = (Array.isArray(noticias?.itens) ? noticias.itens : []).slice(0, 3);
+    if (itens.length > 0) {
+      const blocos = itens.map((n) => {
+        const data = n.data ? n.data.slice(0, 10) : 'data desconhecida';
+        return `## ${n.titulo} (${data})\n\n${String(n.conteudo ?? '').trim()}`;
+      });
+      partes.push(
+        '# Atualizações recentes do jogo\n\n' +
+          'Notas oficiais publicadas pela desenvolvedora, da mais recente para a mais antiga. ' +
+          'Pese a DATA: o efeito de um anúncio no preço costuma acontecer nos primeiros dias e ' +
+          'depois se dissolve. Nem toda atualização mexe no preço de um item — correção de bug ' +
+          'de mapa não move nada; item novo, mudança no que se pode obter e evento com premiação ' +
+          'movem.\n\n' +
+          blocos.join('\n\n'),
       );
     }
   }

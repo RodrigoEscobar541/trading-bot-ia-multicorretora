@@ -29,8 +29,8 @@ firebase-debug.log
 backup_*.json
 backup_*.md
 
-# Scripts locais de uso único que ESCREVEM no banco de produção. Ficam fora do
-# repositório de propósito: nada que reescreva agregados em produção deve estar
-# a um `git pull` de distância de rodar por engano.
+# Scripts de dados FICTÍCIOS para apresentação (maquiagem de tela) e o reparo do
+# resíduo que eles deixam. Nunca devem entrar no repositório: o que o primeiro
+# escreve não é resultado real, e o segundo reescreve agregados em produção.
 vitrine-demo.mjs
 reparar-vitrine.mjs

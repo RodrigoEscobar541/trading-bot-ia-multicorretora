@@ -30,12 +30,14 @@ import { criarConectorMB } from './mb/conectorMB.js';
 import { criarConectorTT } from './tt/conectorTT.js';
 import { criarConectorBN } from './bn/conectorBN.js';
 import { criarConectorTORO } from './toro/conectorTORO.js';
+import { criarConectorSTEAM } from './steam/conectorSTEAM.js';
 
 const CONECTORES = {
   mb: criarConectorMB,
   tt: criarConectorTT,
   bn: criarConectorBN,
   toro: criarConectorTORO, // modo ASSISTIDO: só leitura (brapi.dev) — nunca envia ordem
+  steam: criarConectorSTEAM, // modo ASSISTIDO: a Steam não tem API de execução
 };
 
 /**

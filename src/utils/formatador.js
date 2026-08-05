@@ -9,8 +9,8 @@ const formatadores = new Map(); // código da moeda → Intl.NumberFormat
  * Formata um valor na MOEDA DA PLATAFORMA (`moeda` do doc `plataformas/{P}`):
  * BRL no MB/BN/Toro, USD na Tastytrade. Existia antes um `formatarBRL` fixo,
  * herdado da V1 (um só ativo, uma só moeda) — ele fazia o log de uma ação
- * americana sair com "R$" na frente de um valor em dólar, e quem abre o log de
- * madrugada para entender uma ordem lê o número errado sem desconfiar.
+ * americana sair como "R$ 331,92", e quem abre o log de madrugada para
+ * entender uma ordem lê o número errado sem desconfiar.
  *
  * Nunca lança: moeda ausente ou inválida cai no número puro + o código. Isto é
  * log e mensagem de operação — formatar não pode derrubar um ciclo.

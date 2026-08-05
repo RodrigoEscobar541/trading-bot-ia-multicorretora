@@ -26,11 +26,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // O UID abaixo é um PLACEHOLDER nesta cópia pública. Substitua pelo UID da
-    // sua conta (console do Firebase → Authentication → coluna "Identificador
-    // do usuário") em TRÊS lugares, que precisam concordar: aqui, em
-    // `dashboard/public/app.js` (UID_AUTORIZADO) e em
-    // `tests/rules/firestoreRules.test.js` (UID_DONO).
     function ehDono() {
       return request.auth != null
         && request.auth.uid == 'COLE_AQUI_O_UID_DO_DONO';

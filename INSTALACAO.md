@@ -1,19 +1,10 @@
-# Instalação e deploy
+# IA Investidora — Plataforma Multi-Ativo (Mercado Bitcoin + IA Gemini)
 
-Passo a passo para colocar o sistema de pé. A visão geral do projeto e as
-decisões de arquitetura estão no [README](README.md).
-
-> **Antes de começar:** esta cópia pública tem **placeholders** em três lugares
-> que precisam do SEU projeto para qualquer coisa funcionar:
->
-> | Onde | O que trocar |
-> | :--- | :--- |
-> | `dashboard/public/firebase-config.js` | a configuração do app web do seu projeto Firebase |
-> | `.firebaserc` | o id do projeto Firebase |
-> | `firestore.rules`, `dashboard/public/app.js`, `tests/rules/firestoreRules.test.js` | o UID da sua conta do Firebase Auth — os três precisam ser **idênticos** |
->
-> O workflow do GitHub Actions também está com o gatilho em **manual**; para
-> reativar o deploy a cada push, veja o comentário no topo dele.
+Plataforma autônoma de análise e execução de operações que roda 24/7. Para cada
+ativo cadastrado (hoje: **BTC, ETH e SOL** no Mercado Bitcoin), coleta dados
+públicos da corretora, calcula indicadores técnicos no próprio código, envia um
+prompt em camadas + JSON estruturado ao Gemini, valida a decisão num Motor de
+Regras determinístico e executa (ou simula) ordens a mercado.
 
 > **Especificação completa**: [CLAUDE.md](CLAUDE.md) (arquitetura e fluxo) e
 > [regras.md](regras.md) (regras de negócio). Princípios centrais: **a IA nunca

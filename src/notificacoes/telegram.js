@@ -16,12 +16,13 @@
 // (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).
 
 import { log, registrarSegredo } from '../utils/logger.js';
+import { formatarDinheiro } from '../utils/formatador.js';
 
 const API_BASE = 'https://api.telegram.org';
 const TIMEOUT_MS = 10_000;
 
 /** Tipos de evento que a dashboard liga/desliga individualmente. */
-export const EVENTOS = ['compra', 'venda', 'recomendacao', 'problema', 'relatorio', 'supervisao', 'modo_vendas'];
+export const EVENTOS = ['compra', 'venda', 'recomendacao', 'problema', 'relatorio', 'supervisao', 'modo_vendas', 'noticia_jogo', 'alerta_preco'];
 
 // Avisos de PROBLEMA se repetiriam a cada ciclo (quota esgotada volta em todo
 // tick até a meia-noite do Pacífico). Trava: no máximo um por chave a cada 24 h.
@@ -263,6 +264,72 @@ export async function notificarSupervisao({ texto, config, fetchFn }) {
     return await enviarMensagem(texto, cfg, { fetchFn });
   } catch (e) {
     log.aviso('Telegram: falha ao enviar a supervisão semanal', e);
+    return false;
+  }
+}
+
+/**
+ * Texto do aviso de atualização do jogo (fase 2 da Steam). Função PURA.
+ *
+ * Curto de propósito: o aviso serve para o dono SABER que saiu update, não
+ * para ler o changelog no celular. Duas linhas da nota e o link — a nota
+ * inteira quem lê é a IA, no prompt.
+ */
+export function formatarNoticiaJogo({ titulo, url, data, conteudo } = {}) {
+  const linhas = [`🎮 <b>${escaparHTML(titulo || 'Atualização do jogo')}</b>`];
+  if (data) linhas.push(new Date(data).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }));
+  const resumo = String(conteudo ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' ');
+  if (resumo) linhas.push('', escaparHTML(resumo.length > 280 ? `${resumo.slice(0, 280)}…` : resumo));
+  if (url) linhas.push('', escaparHTML(url));
+  return linhas.join('\n');
+}
+
+/**
+ * Avisa que saiu atualização do jogo. Sem trava anti-spam por tempo: a trava
+ * aqui é o `gid` já visto (quem chama só notifica novidade), e engolir um
+ * anúncio de verdade por causa de um relógio seria pior.
+ */
+export async function notificarNoticiaJogo({ noticia, config, fetchFn }) {
+  try {
+    const cfg = resolverConfig(config);
+    if (!cfg || !cfg.eventos.noticia_jogo) return false;
+    if (!noticia?.titulo) return false;
+    return await enviarMensagem(formatarNoticiaJogo(noticia), cfg, { fetchFn });
+  } catch (e) {
+    log.aviso('Telegram: falha ao avisar sobre a atualização do jogo', e);
+    return false;
+  }
+}
+
+/**
+ * Texto do alerta de preço-alvo (fase 5 da Steam). Função PURA.
+ *
+ * Diz o alvo E o preço de agora: "cruzou" sem o número obriga o dono a abrir a
+ * dashboard só para saber o quanto.
+ */
+export function formatarAlertaPreco({ nome, tipo, alvo, preco, moeda = 'BRLS' } = {}) {
+  const seta = tipo === 'abaixo' ? '🔻' : '🔺';
+  const verbo = tipo === 'abaixo' ? 'caiu para' : 'subiu para';
+  return [
+    `${seta} <b>${escaparHTML(nome ?? 'item')}</b>`,
+    `${verbo} ${formatarDinheiro(preco, moeda)} (seu alvo: ${formatarDinheiro(alvo, moeda)})`,
+  ].join('\n');
+}
+
+/** Avisa que um item cruzou o preço-alvo. Não lança. */
+export async function notificarAlertaPreco({ alerta, config, fetchFn }) {
+  try {
+    const cfg = resolverConfig(config);
+    if (!cfg || !cfg.eventos.alerta_preco) return false;
+    if (!alerta?.nome) return false;
+    return await enviarMensagem(formatarAlertaPreco(alerta), cfg, { fetchFn });
+  } catch (e) {
+    log.aviso('Telegram: falha ao enviar o alerta de preço', e);
     return false;
   }
 }

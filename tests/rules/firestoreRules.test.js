@@ -15,8 +15,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-// Tem de ser IDÊNTICO ao UID de `firestore.rules` — é isso que estes casos
-// provam. Nesta cópia pública os dois são o mesmo placeholder.
 const UID_DONO = 'COLE_AQUI_O_UID_DO_DONO';
 
 // `firebase emulators:exec` define esta env. Sem ela não há emulador: os casos

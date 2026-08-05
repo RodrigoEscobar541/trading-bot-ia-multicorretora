@@ -167,6 +167,8 @@
                   <label class="campo-inline"><input id="tg-ev-problema" type="checkbox" /> Problemas (quota da IA, corretora fora do ar)</label>
                   <label class="campo-inline"><input id="tg-ev-relatorio" type="checkbox" /> Relatório semanal de decisões</label>
                   <label class="campo-inline"><input id="tg-ev-supervisao" type="checkbox" /> Supervisão semanal (diagnóstico e mudanças no prompt)</label>
+                  <label class="campo-inline"><input id="tg-ev-noticia_jogo" type="checkbox" /> Atualizações do CS2 (notas de update da Steam)</label>
+                  <label class="campo-inline"><input id="tg-ev-alerta_preco" type="checkbox" /> Alertas de preço-alvo (itens da Steam)</label>
                 </fieldset>
                 <button type="submit" class="botao-primario">Salvar</button>
               </form>
@@ -541,6 +543,127 @@
             <div class="form-acoes">
               <button type="submit" class="botao-primario">Salvar regras de liquidação</button>
               <span id="regras-venda-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <!-- ============ tela: Steam — mercado de skins do CS2 ============ -->
+      <section id="tela-steam" hidden>
+        <section class="cartao">
+          <h2>Inventário na Steam</h2>
+          <p class="texto-secundario">
+            O robô lê o seu inventário público do CS2 e o preço de cada item no Mercado da
+            Comunidade. Ele NUNCA compra nem vende: a Steam não tem API de execução, então aqui ele
+            só analisa e recomenda — quem executa é você, no site. Os avisos chegam pelo Telegram.
+          </p>
+          <dl class="lista-info">
+            <div><dt>Itens</dt><dd id="steam-qtd">—</dd></div>
+            <div><dt>Valor do inventário</dt><dd id="steam-total">—</dd></div>
+            <div><dt>Itens analisados pela IA</dt><dd id="steam-marcados">—</dd></div>
+            <div><dt>Atualizado</dt><dd id="steam-atualizado">—</dd></div>
+          </dl>
+          <p id="steam-erro" class="texto-secundario" hidden></p>
+          <div class="form-acoes">
+            <button type="button" id="btn-steam-atualizar" class="botao-fantasma">↻ Atualizar agora</button>
+            <span id="steam-status" class="texto-secundario" role="status"></span>
+          </div>
+        </section>
+
+        <section class="cartao">
+          <h2>Configuração</h2>
+          <form id="form-steam-config" class="form-config">
+            <div class="grade-campos">
+              <label>SteamID64 (17 dígitos)
+                <input type="text" id="steam-id64" maxlength="17" inputmode="numeric" autocomplete="off" placeholder="76561198…" />
+              </label>
+              <label>Análise pela IA (min)
+                <input type="number" id="steam-int-analise" min="15" step="5" />
+              </label>
+              <label>Preços do inventário (min)
+                <input type="number" id="steam-int-precos" min="15" step="5" />
+              </label>
+              <label>Atualizações do CS2 (min)
+                <input type="number" id="steam-int-noticias" min="15" step="5" />
+              </label>
+            </div>
+            <p class="texto-secundario">
+              De quanto em quanto tempo cada rotina roda. São três porque custam coisas diferentes:
+              a análise gasta uma chamada de IA por item marcado; os preços gastam uma consulta por
+              item (a Steam corta quem passa de ~20 por minuto, então varrer 100 itens leva alguns
+              minutos); procurar atualização do jogo é uma consulta só. Mínimo de 15 minutos nos
+              três. O seu inventário precisa estar <strong>público</strong> no perfil da Steam.
+            </p>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar configuração</button>
+              <span id="steam-config-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="cartao">
+          <h2>Alertas de preço</h2>
+          <p class="texto-secundario">
+            Avisa no Telegram quando um item cruza o preço que você definir — sem gastar análise da
+            IA. Serve para qualquer item da lista, marcado ou não. O aviso sai UMA vez por travessia:
+            se o item ficar parado abaixo do alvo, você não recebe a mesma mensagem toda hora; ele
+            volta a valer quando o preço sobe de novo.
+          </p>
+          <form id="form-steam-alerta" class="form-config">
+            <div class="grade-campos">
+              <label>Item
+                <select id="steam-alerta-item"></select>
+              </label>
+              <label>Avisar se cair abaixo de
+                <input type="number" id="steam-alerta-abaixo" min="0" step="0.01" placeholder="deixe vazio para não usar" />
+              </label>
+              <label>Avisar se subir acima de
+                <input type="number" id="steam-alerta-acima" min="0" step="0.01" placeholder="deixe vazio para não usar" />
+              </label>
+            </div>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar alerta</button>
+              <span id="steam-alerta-status" class="texto-secundario" role="status"></span>
+            </div>
+          </form>
+          <div id="steam-alertas-ativos"></div>
+        </section>
+
+        <section class="cartao">
+          <h2>Atualizações do CS2</h2>
+          <p class="texto-secundario">
+            O robô acompanha os anúncios oficiais do jogo. Quando sai um novo, você recebe no
+            Telegram — e a nota vira material de análise para a IA. Num mercado de skin, notícia do
+            jogo pesa mais que qualquer indicador técnico: case nova, operação e mudança de drop
+            movem o preço.
+          </p>
+          <div id="steam-noticias"></div>
+        </section>
+
+        <section class="cartao">
+          <h2>Itens do inventário</h2>
+          <p class="texto-secundario">
+            Todos os itens aparecem aqui. <strong>Marque os que a IA deve analisar</strong> — o
+            resto continua na tela só mostrando o valor, sem gastar chamada de IA. Item marcado vira
+            um ativo do sistema, com histórico próprio; desmarcar apenas o desliga, sem apagar nada.
+          </p>
+          <div id="steam-itens" class="steam-grade"></div>
+        </section>
+
+        <section class="cartao">
+          <h2>Prompt do agente da Steam</h2>
+          <p class="texto-secundario">
+            O texto que orienta a IA ao analisar skins. Esta plataforma <strong>não recebe as regras
+            gerais</strong>: elas falam de RSI, MACD e candles de 15 minutos, que não existem neste
+            mercado. Escreva aqui o que vale para skin — lembrando que a Steam cobra ~15% na venda,
+            então só há lucro acima de +15%, e que o dinheiro fica preso na carteira Steam.
+            <span id="steam-prompt-versao"></span>
+          </p>
+          <form id="form-steam-prompt">
+            <textarea id="texto-steam-prompt" rows="16" spellcheck="false"></textarea>
+            <div class="form-acoes">
+              <button type="submit" class="botao-primario">Salvar prompt</button>
+              <span id="steam-prompt-status" class="texto-secundario" role="status"></span>
             </div>
           </form>
         </section>

@@ -5,16 +5,28 @@
 > aqui e removidos da raiz); detalhes de arquitetura no `CLAUDE.md` e no
 > histórico do git.
 >
-> **Organização (obrigatória):** o arquivo tem três blocos, nesta ordem —
-> **✅ Entregues** (por número de versão), **🔄 Em execução** e
-> **⬜ Ideias e pendências**. Nada que ainda não foi entregue pode aparecer no
-> meio das entregas: ideia nova entra sempre no último bloco, e só sobe para o
-> primeiro quando estiver de fato pronta. O item marcado **👉 PRÓXIMO PASSO**
-> abre o bloco de ideias.
+> **Organização (obrigatória — reorganizado em 2026-08-04):** o arquivo tem
+> QUATRO blocos, nesta ordem, e nada pode aparecer fora do seu bloco:
+>
+> | Bloco | O que entra | Como é numerado |
+> | :--- | :--- | :--- |
+> | **1 · ✅ Entregues** | só o que está pronto e no ar | **número de versão** crescente (V1.0 → V8.9), sem buracos |
+> | **2 · 🔄 Em execução** | o que está acontecendo agora | pelo nome, com a data-limite |
+> | **3 · ⬜ A fazer** | tudo que falta | **número de PRIORIDADE** (1, 2, 3…), do mais importante para o menos |
+> | **4 · 📎 Anexos** | registros encerrados que ainda descrevem o sistema | letra (A, B…) |
+>
+> **As duas numerações não se misturam.** Entregue tem versão; pendente tem
+> prioridade. Uma ideia com nome de versão (ex.: "V6.7") mantém o nome dentro do
+> texto, mas o título dela é a prioridade — só ganha número de versão quando for
+> entregue de fato.
+>
+> **Quando entregar algo:** criar a seção no bloco 1 com a versão seguinte, tirar
+> o item do bloco 3 e renumerar as prioridades restantes. Quando surgir uma ideia
+> nova: entra no bloco 3, na posição de prioridade que ela merece.
 
 ---
 
-# ✅ Entregues
+# 1 · ✅ Entregues
 
 ## ✅ V1.0 — Bot BTC
 
@@ -427,15 +439,17 @@ valor); o Motor confere `preco_atual <= stop_loss` a cada ciclo e executa.
   nunca vendida, só o lote furado sai, ordem aberta bloqueia, trailing só sobe,
   disparo abaixo do mínimo de variação, a marcação da venda no banco e a
   recomendação única por episódio na plataforma assistida.
-- **Entrega parte da ideia da V11** (evitar que o prejuízo cresça sem vender só
-  por estar no vermelho): o chão é definido por análise técnica na entrada, não
-  por um gatilho cego de saldo.
+- **Entrega parte de uma ideia antiga do roadmap** (evitar que o prejuízo cresça
+  sem vender só por estar no vermelho): o chão é definido por análise técnica na
+  entrada, não por um gatilho cego de saldo. A numeração daquela ideia não existe
+  mais — não confundir com nada do bloco 3 de hoje.
 
 ## ✅ V6.6.1 — Trailing consciente das taxas + diagnóstico das decisões (2026-07-24)
 
 Investigação do caso "a IA viu o lucro e não vendeu" (era **PBR/Tastytrade**, em
 SIMULAÇÃO — não PETR4/Toro). O levantamento no Firestore virou o achado mais
-importante até agora, e **contradiz a premissa da V6.7 abaixo**.
+importante até agora, e **contradiz a premissa da antiga "V6.7"** (hoje a
+prioridade 2 do bloco 3).
 
 **O que os dados mostraram** (todos os 15 ativos, 565 análises):
 
@@ -1173,6 +1187,61 @@ operação criadas pelo código de verdade os têm.
 - 418 testes (6 novos). A regra entrou no CLAUDE.md §16: métrica nova exige campo
   no contrato.
 
+## ✅ V8.4 — Análise de engenharia do código (2026-07-26)
+
+Item 5 da preparação do recomeço (Anexo B). Uma varredura no projeto inteiro
+antes de resetar os dados — a versão existia citada no código e no CLAUDE.md sem
+ter seção própria aqui; ganhou uma em 2026-08-04.
+
+**O veredito: a arquitetura do BOT está sã.** As fronteiras que o CLAUDE.md
+promete são reais (só `conectores/` fala com corretora, só `iaClient` com a IA, o
+Motor é puro, nenhum `if (BTC)` no núcleo) e o código morto era 2,5% dos exports.
+O que cresceu torto foi a **DASHBOARD**: ela reimplementa a camada de
+persistência (43 caminhos de Firestore digitados à mão, o incremento de versão em
+6 lugares) e reimplementa fórmulas do Motor. Todos os defeitos encontrados eram
+ali.
+
+Aplicado — o que era pequeno e de baixo risco:
+
+- **Breakeven da tela ≠ breakeven do bot.** A coluna "preço mínimo de venda"
+  usava a taxa de compra da CONFIG; o Motor usa a taxa que a corretora de fato
+  cobrou naquele lote (§10.4). Num lote de BTC os dois números divergiam o
+  equivalente a mais de 1% da posição.
+  Corrigido e conferido contra as 4 posições reais de produção: bate exatamente.
+- **Log em reais para ativo em dólar.** `formatarBRL`, herdado da V1 (um ativo,
+  uma moeda), fazia a compra de uma ação americana sair no log com "R$" na frente.
+  Virou `formatarDinheiro(valor, moeda)`, com a moeda da plataforma.
+- **Cache de prompt no escopo errado.** Os 4 docs GLOBAIS e o template da
+  plataforma moravam dentro da chave por ativo — 15 ativos liam 15 vezes o mesmo
+  documento. Cada análise custava 7 leituras de config; passou a custar 2 (fora a
+  primeira de cada janela de 5 min). Nada muda no comportamento:
+  `tests/catalogo.test.js` ganhou 5 casos que provam o escopo pelo efeito, e 2
+  deles falham contra o código antigo.
+- **Faxina:** os 8 exports que ninguém chamava saíram (`formatarBRL`,
+  `formatarBTC`, `formatarPercentual`, `calcularEMA`, `STATUS_POSICAO`,
+  `cancelarOrdem`, `obterOrderbook`, os dois acessores de `dados/dividendos`) e
+  `volumeTotalBTC`/`volumeTotalBRL` viraram `volumeEmUnidades`/
+  `volumeFinanceiro` — os nomes antigos mentiam num núcleo multi-moeda.
+
+**Ficou por fazer, POR DECISÃO** — são dias de trabalho e não mudam nenhum número
+que o reset queria medir (seguem abertos, ver prioridade 8 do bloco 3):
+
+- **A dashboard duplica a camada de banco.** `firebaseClient.js` diz ser "a
+  ÚNICA camada de persistência" e não é. Os defeitos acima são sintomas disso:
+  quando um documento muda de forma, são dois lugares para acertar e nada avisa
+  se você acertar só um.
+- **`app.js` tem 2.522 linhas e nenhum teste** (só o freio de login, extraído na
+  V7.4). É a superfície que o dono usa todo dia e a única sem rede de segurança.
+- ~~Mojibake em `src/indicadores/`~~ — **resolvido em 2026-08-03** (commit
+  `fe29361`): os 6 arquivos estavam salvos em CP1252 e os acentos dos comentários
+  voltaram. Era só comentário, zero efeito na conta.
+
+**Uma coisa foi levantada e o dono decidiu manter:** ativo novo do MB nasce sem o
+campo de taxa, então a tela de config mostra 1,5% e grava 1,5% se for salva,
+enquanto o bot usaria o padrão de 0,7%. As compras reais no MB pagaram 0,7042%.
+O dono considerou 1,5% aceitável — fica registrado para não ser "descoberto" de
+novo daqui a três meses.
+
 ## ✅ V8.5 — O pico do lote e a trava que faltava no reset (2026-07-26)
 
 Revisão de engenharia pedida na véspera do reset. Duas coisas, e as duas são do
@@ -1273,24 +1342,8 @@ texto e PRESERVAR o `gerado_em` foi deliberado: apagar o documento inteiro faria
 o agente achar que nunca rodou e disparar na madrugada seguinte, com um dia só de
 amostra.
 
-**4. O reset não alcançou a memória do bot** (corrigido no mesmo dia). Achado
-horas depois, ao investigar "por que a TT não está sendo analisada" — a TT estava
-bem, só não tinha variado 0,3%. O orquestrador lê `dados/estado` de cada ativo
-UMA vez por boot e depois vive de uma cópia em RAM; o reset apagou os documentos
-e ninguém reiniciou o processo. Resultado: 7 ativos seguiram filtrando a variação
-contra o preço de ANTES do reset, e 5 regravaram `decisoes_acumuladas` de 25/07
-nos documentos recém nascidos. Este segundo é o que doía: com
-`relatorio_decisoes` apagado, o primeiro relatório não tem retrato anterior para
-subtrair, então publicaria ~150 decisões pré-reset como se fossem da janela nova
-— a contaminação que o reset existe para evitar, entrando pela porta que o
-comentário do próprio mapa em memória já avisava estar aberta.
-
-Conserto: o reset passou a gravar `estado_invalidado_em` em `global/controle`, e
-o orquestrador descarta a cópia em memória quando a marca muda
-(`deveLimparEstadoEmMemoria`, pura e testada). Carona no doc que o tick já lê
-fresco todo minuto — nenhuma leitura nova, mesmo padrão do modo vendas. O
-primeiro tick de cada processo só ANOTA a marca, nunca limpa: limpar no boot
-custaria uma releitura por ativo a cada reinício, sem ganho.
+**4. O reset não alcançou a memória do bot** — descoberto horas depois e
+corrigido no mesmo dia. Virou seção própria: **V8.7**, logo abaixo.
 
 **A tensão que ficou, de olhos abertos.** As decisões 3 e 4 se cruzam: o
 supervisor volta a rodar em 01/08, no meio da janela que vai até 08/08, e vai
@@ -1298,6 +1351,33 @@ reescrever o prompt do analista. O dono escolheu assim sabendo — a auto-corre�
 é parte do sistema que ele quer medir. O relatório de 08/08, portanto, não
 descreve um prompt só. A amostra pode ser cortada depois pelo campo
 `versao_supervisao`, que cada análise grava no histórico.
+
+## ✅ V8.7 — O reset não alcançou a memória do bot (2026-07-27)
+
+Correção do dia seguinte ao reset (era o item 4 da V8.6; ganhou seção própria em
+2026-08-04, porque o CLAUDE.md §7.1 e os testes já a citavam pelo número).
+
+**O defeito.** Achado ao investigar "por que a TT não está sendo analisada" — a
+TT estava bem, só não tinha variado 0,3%. O orquestrador lê `dados/estado` de
+cada ativo UMA vez por boot e depois vive de uma cópia em RAM; o reset apagou os
+documentos e ninguém reiniciou o processo. Resultado: 7 ativos seguiram filtrando
+a variação contra o preço de ANTES do reset, e 5 regravaram `decisoes_acumuladas`
+de 25/07 nos documentos recém nascidos. Este segundo é o que doía: com
+`relatorio_decisoes` apagado, o primeiro relatório não teria retrato anterior para
+subtrair e publicaria ~150 decisões pré-reset como se fossem da janela nova — a
+contaminação que o reset existe para evitar, entrando pela porta que o comentário
+do próprio mapa em memória já avisava estar aberta.
+
+**O conserto.** O reset passou a gravar `estado_invalidado_em` em
+`global/controle`, e o orquestrador descarta a cópia em memória quando a marca
+muda (`deveLimparEstadoEmMemoria`, pura e testada). Carona no doc que o tick já lê
+fresco todo minuto — nenhuma leitura nova, mesmo padrão do modo vendas. O
+primeiro tick de cada processo só ANOTA a marca, nunca limpa: limpar no boot
+custaria uma releitura por ativo a cada reinício, sem ganho.
+
+**A lição, que virou invariante no CLAUDE.md §16:** apagar um documento no banco
+não alcança quem guarda uma cópia dele em memória. Quem escrever em `dados/estado`
+por fora do bot precisa invalidar essa cópia.
 
 ## ✅ V8.8 — A folga mínima do chão: o vilão não era o stop-loss (2026-07-29)
 
@@ -1406,35 +1486,33 @@ significam que o relatório não vai conseguir separar o efeito da folga do efei
 do fatiamento. Aceitável porque as duas entram ANTES da janela reabrir — é um
 sistema novo sendo medido, não uma mudança no meio da amostra.
 
-## ✅ Pendências avulsas já respondidas
 
-- ✅ ~~Analisar segurança das key e garantir que estão longe do frontend diretamente, por segurança~~
-  (2026-07-25) FEITO — ver "V7.1 — Segredos fora do alcance do navegador".
+## ✅ V8.9 — Cópia pública para portfólio (2026-08-03)
 
-- ✅ ~~Tem uma posição da da petrobras que esta em lucro, Mas parece que o bot ja perdeu a chance de vender no melhor preço, esta caindo, ela mesmo identificou, e mesmo assim não vendeu, pq sera?~~
-  (2026-07-24) RESPONDIDO — era PBR/Tastytrade em simulação, e a causa é que a
-  IA praticamente não decide VENDER (3 em 565 análises): o prompt a faz avaliar
-  só ENTRADA. Diagnóstico completo na V6.6.1. Falta implementar a saída como
-  decisão de 1ª classe.
+**Este repositório é o resultado desta versão.** O projeto original é privado e
+continua assim; aqui está uma cópia com o código e a documentação de engenharia
+completos, sem nada que aponte para a operação real.
 
-- ✅ ~~Criação do agente semanal que vai estudar as decisões da IA e do motor de regras e sugerir melhorias para a IA analista…~~
-  (2026-07-25) FEITO — ver "✅ V7.2 — Agente supervisor semanal". Foi além de
-  sugerir: ele **escreve** a camada de prompt, com kill-switch e histórico.
-
-- ✅ ~~Add rate limit, para evitar ataques de login infinito~~
-  (2026-07-25) FEITO — ver "✅ V7.4 — Freio de tentativas no login". Atenção à
-  premissa corrigida lá: limite no cliente não barra ataque; quem barra é o
-  Firebase (já ativo) e, se precisar, o App Check (que ficou na lista A fazer).
-
-- ✅ ~~Modo vendas: A IA com foco em vender tudo o que tem comprado com o melhor lucro possivel~~
-  (2026-07-25) FEITO — ver "✅ V8.0 — Modo vendas". Entregue como LIQUIDAÇÃO
-  (encerrar a carteira com o menor prejuízo possível dentro de um prazo), não
-  como "vender melhor" no dia a dia. A saída como decisão de 1ª classe na
-  operação NORMAL continua aberta, na lista A fazer.
+- **Cópia, não abertura.** Abrir o repositório original exigiria reescrever
+  histórico. Esta cópia parte de um `git init` próprio — os commits de lá não
+  vêm para cá, de propósito, porque as mensagens de commit citam números de
+  produção.
+- **O que não veio junto**: credenciais e identificadores do ambiente (que
+  viraram placeholders), valores em dinheiro que descrevem a carteira real (onde
+  o número sustentava um argumento, ele virou PROPORÇÃO — o raciocínio continua
+  auditável sem expor o tamanho da conta) e os tickers que identificam posições
+  reais. Exemplo redondo de didática ficou.
+- **Pré-requisito que já estava pago**: a V7.1 tirou os segredos do alcance do
+  navegador, e nenhum segredo jamais esteve versionado (`.env` sempre ignorado,
+  `.env.example` só com nomes — conferido também no histórico). É isso que
+  permite publicar a árvore atual sem reescrever nada.
+- **Faxina no mesmo dia**: os 6 arquivos de `src/indicadores/` estavam salvos em
+  CP1252 e os acentos dos comentários voltaram — pendência que a V8.4 havia
+  registrado.
 
 ---
 
-# 🔄 Em execução
+# 2 · 🔄 Em execução
 
 ## 🔄 👉 JANELA DE MEDIÇÃO — REABERTA em 29/07, vai a 12/08
 
@@ -1474,8 +1552,8 @@ identificada. Não vale para ajuste fino nem para ideia boa.
 antes da V6.6, 15 fechamentos pela IA, todos positivos; nas primeiras 24 h da
 V6.6, 7 por stop, todos negativos; assimetria realizada de **0,32×**
 — ganha 1 quando acerta, perde 3 quando erra —, número dominado por um
-único lote (a pior perda do histórico, ver V8.1). Tirando esse outlier a razão ia
-a 0,71× e o resultado por lote virava positivo. É esse par de números que a janela nova
+único lote (a pior perda do histórico, ver V8.1). Tirando esse outlier a razão ia a 0,71× e o
+resultado por lote virava positivo. É esse par de números que a janela nova
 precisa substituir por algo que descreva um sistema só.
 
 **Evidência de que o trailing funciona em produção** (TT/PBR, 25/07), também
@@ -1497,114 +1575,55 @@ posição sairia no lucro.
   medição.
 
 **Quando a janela fechar (12/08):** ler os dois relatórios, e só então decidir
-sobre a V6.7 (alvo mínimo / trava de realização) e a saída como decisão de 1ª
-classe. As duas esperam exatamente estes dados.
+entre as prioridades 2 (alvo mínimo / trava de realização) e 3 (saída como
+decisão de 1ª classe) do bloco 3. As duas esperam exatamente estes dados.
 
 ---
 
-## 📎 Registro da preparação do recomeço (26/07) — CONCLUÍDA
+# 3 · ⬜ A fazer — em ordem de PRIORIDADE
 
-Mantido porque o veredito da análise de engenharia (item 5) ainda descreve o
-código de hoje. A operação em si está na V8.6.
+Numeração por PRIORIDADE, não por versão: **1 é o mais importante**. Nada aqui
+foi entregue. Quando um item for feito, ele vira uma versão no bloco 1 e os
+demais sobem um número.
 
-| # | Item | Estado |
+| # | O que é | Quando dá para fazer |
 | :--- | :--- | :--- |
-| 1 | A IA quase não vende — é defeito? | ✅ **Não é.** É a estratégia (saída pelo chão que sobe). Estava implícita no prompt e virou a §4.1 das regras gerais — V8.2 |
-| 2 | Carteira da Toro inconsistente | ✅ Limpa (V8.2) |
-| 3 | Não existe rotina de reset | ✅ `scripts/resetar-dados.mjs` (V8.2) |
-| 4 | Conferir os campos de medição | ✅ Contrato testado (V8.3) |
-| 5 | Análise de engenharia do código | ✅ Feita; correções pequenas aplicadas (V8.4) |
-| 6 | Revisão da véspera do reset | ✅ Trava do script + PICO do lote (V8.5) |
+| **1** | Decidir sobre a SAÍDA, com os dois relatórios na mão | **12/08** (fim da janela) |
+| **2** | Alvo mínimo / trava de realização precoce (a antiga "V6.7") | depois do 1 |
+| **3** | Saída como decisão de 1ª classe na operação normal | depois do 1 |
+| **4** | Plataforma Steam — skins do CS2 | **a qualquer momento** |
+| **5** | Estudo "trader de 20 anos": onde este sistema perde dinheiro | a qualquer momento |
+| **6** | Índices e dados de ações para a IA (Financial Modeling Prep) | a qualquer momento |
+| **7** | Contexto por mensagem no Telegram (a antiga "V7.0 parte 2") | a qualquer momento |
+| **8** | Dívida técnica da dashboard (banco duplicado, `app.js` sem teste) | a qualquer momento |
+| **9** | App Check (reCAPTCHA Enterprise) | a qualquer momento |
+| **10** | Cálculo do IR sobre os lucros (a antiga "V9.0") | a qualquer momento |
+| **11** | Chat IA sobre o próprio projeto (a antiga "V10.0") | a qualquer momento |
 
-**Item 4 — conferir os campos de medição.** Achado da V8.1: `stop_loss_inicial`
-não existia em 100% dos lotes fechados, e isso cegou a métrica de assimetria sem
-ninguém perceber. Antes de resetar é preciso garantir que TODO campo lido pelas
-métricas é gravado desde o primeiro lote. Um campo faltando = reset desperdiçado,
-e só se descobre semanas depois. Forma: um teste que abre uma posição, fecha, e
-afirma que todos os campos usados por `relatorioDecisoes` e pelo retrato do
-supervisor existem — o mesmo remédio que a V7.2 usou para os nomes de campo.
+**Atenção à coluna da direita:** os três primeiros são os mais importantes e são
+justamente os que NÃO podem ser feitos agora — mexer neles antes de 12/08 quebra
+o congelamento e invalida a janela de medição. Na prática, o que dá para tocar
+hoje começa no **4**.
 
-**Item 5 — análise de engenharia do código.** FEITA em 2026-07-26 (V8.4). O
-veredito: a arquitetura do BOT está sã — as fronteiras que o CLAUDE.md promete
-são reais (só `conectores/` fala com corretora, só `iaClient` com a IA, o Motor é
-puro, nenhum `if (BTC)` no núcleo) e o código morto é 2,5% dos exports. O que
-cresceu torto foi a DASHBOARD: ela reimplementa a camada de persistência (43
-caminhos de Firestore digitados à mão, o incremento de versão em 6 lugares) e
-reimplementa fórmulas do Motor. Os defeitos encontrados eram todos ali.
+## ⬜ 1 — Decidir sobre a SAÍDA, com os dois relatórios de 12/08 na mão
 
-Aplicado agora — o que era pequeno e de baixo risco:
+Nada aqui se resolve antes de 12/08: as duas frentes dependem de medir o sistema
+atual, e medir o sistema atual é a janela que está em execução (bloco 2).
 
-- **Breakeven da tela ≠ breakeven do bot.** A coluna "preço mínimo de venda"
-  usava a taxa de compra da CONFIG; o Motor usa a taxa que a corretora de fato
-  cobrou naquele lote (§10.4). Num lote de BTC os dois números divergiam o
-  equivalente a mais de 1% da posição.
-  Corrigido e conferido contra as 4 posições reais de produção: bate exatamente.
-- **Log em reais para ativo em dólar.** `formatarBRL`, herdado da V1 (um ativo,
-  uma moeda), fazia a compra de uma ação americana sair no log com "R$" na frente.
-  Virou `formatarDinheiro(valor, moeda)`, com a moeda da plataforma.
-- **Cache de prompt no escopo errado.** Os 4 docs GLOBAIS e o template da
-  plataforma moravam dentro da chave por ativo — 15 ativos liam 15 vezes o mesmo
-  documento. Cada análise custava 7 leituras de config; agora custa 2 (fora a
-  primeira de cada janela de 5 min). Nada muda no comportamento: `tests/
-  catalogo.test.js` ganhou 5 casos que provam o escopo pelo efeito, e 2 deles
-  falham contra o código antigo.
-- **Faxina:** os 8 exports que ninguém chamava saíram (`formatarBRL`,
-  `formatarBTC`, `formatarPercentual`, `calcularEMA`, `STATUS_POSICAO`,
-  `cancelarOrdem`, `obterOrderbook`, os dois acessores de `dados/dividendos`) e
-  `volumeTotalBTC`/`volumeTotalBRL` viraram `volumeEmUnidades`/
-  `volumeFinanceiro` — os nomes antigos mentiam num núcleo multi-moeda.
-
-Ficou por fazer, POR DECISÃO — são dias de trabalho e não mudam nenhum número
-que o reset quer medir:
-
-- **A dashboard duplica a camada de banco.** `firebaseClient.js` diz ser "a
-  ÚNICA camada de persistência" e não é. Os defeitos acima são sintomas disso:
-  quando um documento muda de forma, são dois lugares para acertar e nada avisa
-  se você acertar só um.
-- **`app.js` tem 2.522 linhas e nenhum teste** (só o freio de login, extraído na
-  V7.4). É a superfície que o dono usa todo dia e a única sem rede de segurança.
-- **Mojibake em `src/indicadores/`.** Os 6 arquivos têm os acentos dos
-  comentários corrompidos (`agregaÃ§Ã£o`). Só comentário, zero efeito na conta;
-  `volume.js` foi reescrito e já saiu limpo, os outros 5 continuam.
-
-**Uma coisa foi levantada e o dono decidiu manter:** ativo novo do MB nasce sem o
-campo de taxa, então a tela de config mostra 1,5% e grava 1,5% se for salva,
-enquanto o bot usaria o padrão de 0,7%. As compras reais no MB pagaram 0,7042%.
-O dono considerou 1,5% aceitável — fica registrado para não ser "descoberto" de
-novo daqui a três meses.
-
-**O que NÃO bloqueava o reset:** IR (V9), Chat IA (V10), contexto por Telegram
-(V7.0 p2), App Check, dados de índices/FMP, repo público. Todos seguem abertos.
-
-**As quatro decisões do dono** que este bloco cobrava foram tomadas em 27/07 e
-estão registradas na tabela da V8.6 — ativos e modo, caixa semeado, camada do
-supervisor e o congelamento até 08/08.
-
----
-
-# ⬜ Ideias e pendências (nada aqui foi entregue)
-
-## ⬜ 👉 PRÓXIMO PASSO — decidir sobre a SAÍDA, com os dados de 08/08 na mão
-
-Nada aqui se resolve antes de 08/08: as duas frentes abaixo dependem de medir o
-sistema atual, e medir o sistema atual é a janela que está em execução.
-
-1. **V6.7 — alvo mínimo / trava de realização precoce** (seção própria abaixo).
-   A régua já existe e o primeiro número saiu, mas veio de uma amostra que o
-   reset apagou e que misturava dois regimes. A decisão volta quando houver
-   lotes fechados sob o regime atual — stop-loss + trailing + pico.
-2. **Saída como decisão de 1ª classe na operação NORMAL.** Parte do "a IA quase
-   não vende" é a ESTRATÉGIA, não defeito (V8.2, regras gerais §4.1). O que
-   resta investigar é o caso legítimo: posição devolvendo lucro, indicadores
-   virando, e a IA seguindo em `AGUARDAR`. `capturaDoPico` (V8.5) é justamente a
-   régua que diz se isso acontece e quanto custa.
+1. **Alvo mínimo / trava de realização precoce** (prioridade 2). A régua já
+   existe e o primeiro número saiu, mas veio de uma amostra que o reset apagou e
+   que misturava dois regimes. A decisão volta quando houver lotes fechados sob o
+   regime atual — stop-loss + trailing + pico + folga.
+2. **Saída como decisão de 1ª classe** (prioridade 3). Parte do "a IA quase não
+   vende" é a ESTRATÉGIA, não defeito (V8.2, regras gerais §4.1). O que resta
+   investigar é o caso legítimo: posição devolvendo lucro, indicadores virando, e
+   a IA seguindo em `AGUARDAR`. `capturaDoPico` (V8.5) é justamente a régua que
+   diz se isso acontece e quanto custa.
 
 Ordem sugerida: ler os dois relatórios semanais, olhar `capturaDoPico` primeiro
-(ela responde se há problema) e só então escolher entre 1 e 2. Implementar
-qualquer das duas ANTES de 08/08 quebra o congelamento e invalida a janela.
+(ela responde se há problema) e só então escolher entre 2 e 3.
 
-
-## ⬜ V6.7 — Assimetria com dente (alvo mínimo / R:R) — candidata
+## ⬜ 2 — Alvo mínimo / trava de realização precoce (a antiga "V6.7")
 
 > ⚠️ **Revisar antes de implementar (2026-07-24):** os dados da V6.6.1 mostram o
 > problema INVERTIDO do descrito abaixo. Não há realização precoce — há ausência
@@ -1656,61 +1675,558 @@ Caminhos possíveis (a escolher):
 
 Depende de: nada. Relacionado: análise semanal das decisões (V7).
 
-## ⬜ V7.0 — Parte 2: contexto por mensagem (futuro)
+## ⬜ 3 — Saída como decisão de 1ª classe na operação NORMAL
 
-- Atualizar o contexto de cada ativo pelo Telegram: o usuário manda uma notícia
-  e ela é gravada no doc `contexto` (já existente desde a V2). Provavelmente
-  precisa de IA para identificar de qual ativo a notícia fala.
-- Exige receber mensagens (webhook ou long polling), não só enviar — é uma
-  mudança de natureza diferente da parte 1.
+A causa-raiz que a V6.6.1 levantou: o analista quase não decide VENDER (3 em 565
+análises, na época). **Revisado em 2026-07-26** — parte disso é a ESTRATÉGIA, não
+defeito: a saída padrão do sistema é o chão que sobe (V8.2, regras gerais §4.1).
 
-## ⬜ A fazer:
+O que resta investigar é o caso legítimo: posição devolvendo lucro, indicadores
+virando, e a IA seguindo em `AGUARDAR`. Isso só se mede com dados do sistema
+atual, e a régua que responde é a `capturaDoPico` (V8.5).
 
-Itens já entregues desta lista foram movidos para "✅ Pendências avulsas já
-respondidas", no bloco de entregues — aqui fica só o que está aberto.
+**Não confundir com o modo vendas (V8.0)**, que é liquidação sob comando do dono.
 
-### Depois do reset (dependem dos dados novos — janela até 08/08)
+Depende de: prioridade 1 (os relatórios de 12/08).
 
-- **Saída como decisão de 1ª classe (operação NORMAL).** A causa-raiz que a
-  V6.6.1 levantou: o analista quase não decide VENDER. **Revisado em 2026-07-26**
-  — parte disso é a ESTRATÉGIA, não defeito (a saída padrão é o chão que sobe;
-  ver V8.2 e regras gerais §4.1). O que resta investigar é o caso legítimo:
-  posição devolvendo lucro, indicadores virando, e a IA seguindo em `AGUARDAR`.
-  Isso só se mede com dados do sistema atual. **Não confundir com o modo vendas
-  (V8.0)**, que é liquidação sob comando.
-- **V6.7 — alvo mínimo / trava de realização precoce.** Ver a seção própria
-  acima: a medição já existe, o primeiro número saiu, e ele não autoriza
-  implementar nada ainda.
+## ⬜ 4 — Plataforma Steam: mercado de skins do CS2 (ideia — 2026-08-04)
 
-### Sem dependência (a qualquer momento)
+**A ideia do dono** (refinada em 2026-08-04): acompanhar o mercado da Steam
+(CS2 — skins, facas, cases) como uma plataforma à PARTE, que não se mistura com
+o dinheiro de verdade. A IA analisa e RECOMENDA; **o aviso chega SÓ pelo
+Telegram** (a tela não notifica nada); o dono compra e vende à mão no site da
+Steam. Na dashboard existe uma **seção "Steam" própria no menu lateral**, onde
+ele vê os itens do inventário que valem alguma coisa — com a FOTO de cada um —,
+pede análise de itens que ainda não tem, e escreve o prompt do agente que faz
+essa análise. **Esta plataforma NÃO recebe as regras gerais** (`regras_gerais`):
+o texto dela é próprio, porque o mercado é outro.
 
-- Estudar possibilidade de introduzir indices e dados sobre ações para a IA analisa e operaria. Ver se há alguma API em algum site que fornece isso. Financial Modeling Prep
-- Atuando como um trader profissional com 20 anos de experiencia. Faça estudo sobre o projeto procurando formas de melhorar desempenho do objetivo do projeto (lucrar).
-- **App Check (reCAPTCHA Enterprise)** — a trava que de fato impede usar a
-  `apiKey` pública fora do app, imposta no Auth e no Firestore. Não afeta o bot
-  (Admin SDK não passa por App Check). Exige configuração no console, não só
-  código. Contexto na V7.4.
-- Estudar deixar repo public ou criar outro repo para mostrar o projeto como portifólio no github
+### A API existe? Sim — mas nenhuma delas é oficial, e nenhuma executa ordem
 
-## ⬜ V9.0 — Cálculo do IR sobre os lucros (ideia)
+| Endpoint | O que dá | Login? |
+| :--- | :--- | :--- |
+| `steamcommunity.com/market/priceoverview/` | menor preço, preço mediano e volume 24h de UM item (`appid=730`, `market_hash_name`, `currency=7` = BRL) | não |
+| `/market/listings/{appid}/{nome}/render/` | as ofertas abertas do item (o "livro") | não |
+| `/inventory/{steamid}/730/2` | o que o dono tem, se o inventário for público | não |
+| `/market/pricehistory/` | série histórica de preço médio DIÁRIO — o mais próximo de candles que existe | **sim** (cookie de sessão) |
+| Terceiros (Skinport REST, CSFloat, steamwebapi, cs2.sh) | preço agregado de vários mercados, com documentação de verdade | chave própria |
 
-- O sistema apura o imposto de renda devido sobre os lucros das operações que
-  ele mesmo registrou (cripto e, futuramente, ações), já considerando as
-  regras de isenção aplicáveis (ex.: limite mensal de vendas) e separando
-  swing trade de day trade.
-- Saída prática: valor da DARF do mês (ou "isento"), com memória de cálculo —
-  os dados de operações/lucros já existem no Firestore.
+Limites e riscos, medidos:
 
-## ⬜ V10.0 — Chat IA
-- Chat IA que entenda o codigo, sua estrutura e funções e seja capaz de responder algumas coisas para o user. De preferencia usar a IA antigravity da API se possivel. Ela não altera nada no codigo, nunca. Apenas lê
-- Chat IA que me ajuda a criar contexto melhores para a IA analista, eu passar á ela noticias, e ela deve me ajudar a fazer um texto bem feito para a IA analista. Quando eu solicitar, essa IA pode ter acesso aos contexto e prompt da IA analista para me ajuda a melhora-los.
+- **~20 requisições por minuto** no `steamcommunity.com`; passando disso, Steam
+  corta por um minuto. Com 10–20 itens e um ciclo de 1 hora, cabe com folga —
+  mas não dá para tratar item como se fosse par de cripto.
+- **Não existe API de execução.** Comprar ou vender automaticamente significa
+  dirigir o site com o cookie da conta do dono, o que arrisca a conta e não vale
+  a pena. Logo, **MODO ASSISTIDO é a única forma honesta** — a mesma conclusão
+  da Toro na V6.0, por um motivo diferente.
+- O `pricehistory` é o único dado bom e é o único que pede login. Preferir viver
+  sem ele (a série passa a ser o que o próprio bot coletar, começando cega) do
+  que colocar cookie de conta no bot.
 
-## Após pronto
+### O que muda em relação a uma corretora — e não é pouco
+
+1. **A taxa de venda é ~15%.** Na Steam o comprador paga X e o vendedor recebe
+   X ÷ 1,15 (5% Steam + 10% do jogo). Na régua canônica do projeto isso vira
+   `taxa_compra_percentual: 0` e `taxa_venda_percentual: 13,04`, o que dá
+   `preco_minimo_venda_lucrativa` = compra × 1,15. **Só existe lucro acima de
+   +15%** — outra ordem de grandeza que os +6,7% do MB (§10.7 do CLAUDE). A
+   consequência é dura: a folga do chão e o alvo teriam de ser muito maiores, e
+   girar rápido aqui é a receita da ruína.
+2. **O dinheiro fica preso na carteira Steam** — não dá para sacar. Por isso
+   este lucro NUNCA pode entrar no `global/renda_real` nem no patrimônio
+   consolidado em BRL: comparar carteira Steam com o CDI seria mentira.
+3. **Trava de 7 dias, com uma exceção que salva a ideia**: item comprado no
+   mercado pode ser RELISTADO na própria Steam na hora; o que trava por 7 dias é
+   passar o item para outro jogador ou para mercado de terceiro. Ou seja, girar
+   dentro da Steam é possível; arbitrar Steam × Skinport/CSFloat, não.
+4. **O dado é pobre**: preço mediano diário e volume. RSI/MACD de 15 minutos não
+   existem neste mercado. Análise em DIÁRIO, como a Toro
+   (`resolucaoAnalise: '1d'`), e provavelmente com menos indicadores.
+5. **Liquidez baixa por item** e spread largo — o preço da tela não é o preço que
+   sai.
+
+### Como caberia na arquitetura sem sujar nada
+
+- Conector novo `src/conectores/steam/`, mesmo contrato de sempre;
+  `ordemMercado`/`aguardarFill` **lançam**, como o da Toro. Cada item é um ATIVO,
+  com `par` = `market_hash_name`.
+- Plataforma `STEAM` com `assistida: true`. Ela APARECE na dashboard, mas numa
+  seção própria — não na lista de plataformas de investimento (ver abaixo).
+- **Fora do dinheiro de verdade, e isso tem de ser estrutural**: nem o patrimônio
+  consolidado em BRL nem a renda × CDI podem somar carteira Steam. A forma barata
+  de garantir isso não é um `if`, é uma **moeda própria** (ex.: `BRLS`): sem
+  cotação em `global/cambio`, o código de hoje já deixa a moeda de fora sozinho e
+  ainda a reporta em `moedas_sem_cambio`.
+- Estado no Firestore como qualquer plataforma (`plataformas/STEAM/...`), mais um
+  doc com o retrato do inventário. Sem memória o bot repete o mesmo aviso a cada
+  ciclo e esquece tudo a cada reinício.
+- **Notificação é só do Telegram**: evento próprio
+  (`global/telegram.eventos.steam`) para as recomendações e os alertas de preço.
+  A tela é consulta, nunca alerta.
+
+### A seção "Steam" da dashboard (rota `#/steam`)
+
+Item do menu lateral separado dos ativos e das plataformas. O que ela tem:
+
+- **Inventário com foto — TODOS os itens aparecem.** Cada um com imagem,
+  quantidade, preço atual e o valor total da coleção. Sem piso de valor: o dono
+  não deixa lixo no inventário, então filtrar só esconderia coisa que ele quer
+  ver. A foto sai do próprio inventário (`icon_url`) montada contra o CDN da
+  Steam (`community.cloudflare.steamstatic.com/economy/image/<icon_url>/128fx128f`)
+  — nada de hospedar imagem, só guardar o `icon_url`.
+- **Um CHECK por item decide quem vai para a IA.** Mostrar valor e analisar são
+  coisas separadas: marcado, o item entra na análise (e consome quota de IA e de
+  requisição); desmarcado, ele continua na tela só exibindo preço. É o que
+  impede o custo de crescer junto com o inventário — e o equivalente honesto do
+  `ativo: true` que já existe em toda config de ativo do projeto. **Item marcado
+  = ativo ligado**; o resto é só cotação.
+- **Quem lê o inventário é o BOT, não o navegador.** Os endpoints da Steam não
+  liberam CORS: uma chamada direta da dashboard falha no navegador. O bot lê,
+  grava o retrato no Firestore, e a tela só desenha o que já está lá. Vale para o
+  preço também.
+- **Pedir análise de item que ele não tem**: campo para colar o
+  `market_hash_name` (ou o link do item), que cadastra o item na lista de
+  observação e passa a receber análise como os demais. É o equivalente do
+  "cadastrar novo ativo" da tela de plataforma.
+- **Editor do prompt do agente da Steam** — o pedido explícito: um texto próprio,
+  escrito pelo dono, para o agente que analisa skin. Fica nesta tela.
+- **Os TRÊS intervalos, editáveis na tela** (pedido do dono em 2026-08-04) — de
+  quanto em quanto tempo cada rotina roda. São três porque têm custos diferentes,
+  e juntá-los num número só obrigaria a usar o mais caro para tudo:
+
+  | Campo | O que controla | Custo de cada rodada | Sugestão inicial |
+  | :--- | :--- | :--- | :--- |
+  | **Análise (min)** | de quanto em quanto tempo a IA analisa os itens MARCADOS | 1 chamada de IA por item marcado | 60 min |
+  | **Preços do inventário (min)** | atualização do preço de TODOS os itens da tela | 1 chamada HTTP por item (limite ~20/min) | 60 min |
+  | **Atualizações do CS2 (min)** | de quanto em quanto tempo o robô procura notícia nova | 1 chamada HTTP, sempre | 30 min |
+
+  Ficam em `plataformas/STEAM` (doc da plataforma), lidos pelo catálogo cacheado
+  — então **valem em até 5 min** depois de salvos, como toda config do projeto.
+  O campo de análise escreve o `tempo_entre_analises_minutos` que todo ativo já
+  tem, aplicado aos itens marcados: nada de mecanismo novo. Piso de 15 min nos
+  três, para um zero digitado por engano não virar chamada em loop.
+- Registro das operações (compra/venda de item) pela mesma fila
+  `operacoes_manuais` que a Toro já usa — com tela, **cai a dependência da V7.0
+  parte 2**, que na versão anterior deste plano era o maior nó.
+
+### O prompt: esta plataforma NÃO recebe as regras gerais
+
+Hoje o `montadorPrompt` põe `global/regras_gerais` sempre em primeiro lugar, e
+essa camada é a única sem flag ("as regras gerais não têm flag" — CLAUDE §9).
+Para a Steam isso precisa mudar, porque o texto fala de RSI, MACD, candles de 15
+minutos e taxa de 0,1% — nada disso existe num mercado de skin.
+
+- Entra um flag **na PLATAFORMA** (ex.: `usaRegrasGerais: false`), não no ativo:
+  é a plataforma inteira que troca de mundo. As demais continuam exatamente como
+  estão, e é isso que o teste tem de provar.
+- No lugar delas vale o texto que o dono escrever na seção Steam.
+- **O supervisor semanal fica de fora** (`usaSupervisao: false` nos itens): ele
+  audita decisão de entrada em ativo financeiro, com as réguas de lá.
+- O `CONTRATO_SAIDA` continua por último, como em todo prompt do projeto.
+- **Tirar as regras gerais NÃO afrouxa nenhuma proteção.** "Nunca vender no
+  prejuízo", stop-loss, folga do chão e orçamento vivem no Motor de Regras, em
+  código — o prompt nunca foi o que segurava isso. O que muda é só o texto que a
+  IA lê.
+
+### "Ouvir" as atualizações do CS2 — procede, e pela porta OFICIAL
+
+Pedido do dono em 2026-08-04: *"tem como o script ouvir o site de att do CS e,
+caso tenha att, passar para a IA analisar?"*. **Tem** — e, ao contrário de tudo o
+mais nesta seção, aqui existe API **oficial e documentada da Valve**, sem chave e
+sem cookie:
+
+```
+GET https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/
+      ?appid=730&count=10&maxlength=0&format=json
+```
+
+Testado em 2026-08-04: devolve os anúncios oficiais do CS2, cada um com **`gid`**
+(id estável — é por ele que se sabe se a notícia é nova), `title`
+("Counter-Strike 2 Update"), `url`, `contents` (a nota da atualização inteira
+quando `maxlength=0`), `date` (unix) e `feedname`. Filtrar por
+`feedname: steam_community_announcements` mantém só o canal oficial.
+
+**Por que isso importa para o preço**: no mercado de skin, notícia do jogo É o
+fundamento. Case nova, operação nova, mudança na tabela de drop ou nerf de arma
+mexem no preço mais que qualquer indicador técnico. É a peça que falta para a
+análise de skin não ser adivinhação sobre um gráfico pobre.
+
+**Como entra sem quebrar nenhum princípio do projeto:**
+
+- **A IA continua sem acessar rede.** Quem busca é o BOT, pelo conector; o texto
+  da nota chega pronto no prompt, como todo o resto (princípio 1.1 do CLAUDE.md).
+- **Mora no conector** (`noticias()`, extensão do contrato — mesmo padrão do
+  `dividendos()` da Toro): nenhum módulo fora de `src/conectores/` fala com a
+  Steam.
+- **Vira uma CAMADA de prompt própria** (`plataformas/STEAM/dados/noticias`),
+  entre o prompt do item e o contexto do dono, com a data do anúncio. Não escreve
+  no `contexto` do dono — aquele texto é dele.
+- **Notícia nova FORÇA a análise.** Sem isso o filtro de variação engoliria o
+  evento: sai a atualização, o preço ainda não mexeu, a variação é 0,0% e o robô
+  não chama a IA justamente no minuto em que ela teria algo a dizer. O
+  orquestrador marca `analise_forcada` no `dados/estado` do item (doc que ele já
+  escreve — custo zero) e o ciclo seguinte pula o filtro uma vez.
+- **Custo**: uma chamada HTTP por rodada na instância primária (48/dia no padrão
+  de 30 min, que é editável na tela), o último `gid` guardado em memória e
+  escrita no Firestore **só quando há notícia nova**. Nenhuma leitura nova no
+  tick de 1 min (invariante V5.2).
+- **Aviso no Telegram na hora**, antes mesmo de a IA opinar: "saiu atualização do
+  CS2" com o título e o link.
+
+Cuidados que já se conhecem: a nota vem com BBCode (`[b]`, `[url]`, `[img]`) e
+precisa ser limpa e limitada (~4.000 caracteres) antes de ir ao prompt; e o feed
+traz também anúncios de torneio, que ficam — evento de e-sports também move
+preço de item.
+
+---
+
+## PLANO DE EXECUÇÃO — 5 fases
+
+Cada fase entrega algo utilizável sozinha e pode parar ali. Nenhuma delas toca em
+decisão de trading das outras plataformas — por isso o trabalho **não quebra o
+congelamento** da janela de medição (bloco 2).
+
+### ✅ Fase 1 — Conector e inventário na tela (ENTREGUE em 2026-08-05)
+
+**474 testes** (30 novos, `tests/conectorSTEAM.test.js`), suíte verde. O que ficou
+de pé:
+
+| O que | Onde |
+| :--- | :--- |
+| `steamPublico.js` — `priceoverview`, inventário, `exchangeInfo` dos nomes | `src/conectores/steam/` |
+| `conectorSTEAM.js` — contrato da V2; `ordemMercado`/`aguardarFill` **lançam** | `src/conectores/steam/` |
+| Registro do conector (`{ mb, tt, bn, toro, steam }`) | `src/conectores/conector.js` |
+| Plataforma `STEAM` semeada: `assistida: true`, `usaRegrasGerais: false`, moeda `BRLS`, `mercado24h: true` | `migrarV1paraV2.js` |
+| Retrato do inventário (todos os itens, com `icon_url`, quantidade e preço) | `plataformas/STEAM/dados/inventario` |
+| Seção "Steam" no menu (`#/steam`): fotos, valores, total e o **check por item** | `dashboard/public/app.js` |
+| Os **três campos de intervalo** (análise · preços · atualizações do CS2), com piso de 15 min | doc `plataformas/STEAM` + tela |
+
+Detalhes que decidem o sucesso da fase:
+
+- **O id do item.** `market_hash_name` tem `|`, espaços e parênteses
+  ("AK-47 | Redline (Field-Tested)") e não serve como id de documento. O id vira
+  um slug; o nome exato fica no `par` do manifest, que é o que vai para a API.
+- **Marcar o check CRIA o ativo** (mesmo caminho do "cadastrar ativo" que já
+  existe); desmarcar faz `config.ativo = false` e **não apaga** — o histórico do
+  item fica. Assim o custo acompanha o que o dono escolheu, não o tamanho do
+  inventário.
+- **Ritmo de preço**: o inventário inteiro atualiza no intervalo que o dono
+  configurar (1 chamada por item, limite de ~20/min — com 100 itens uma varredura
+  leva ~5 min de fila, e é por isso que o campo tem piso). Botão "atualizar agora"
+  na tela para não precisar esperar.
+- Testes: `tests/conectorSTEAM.test.js` — leitura do dinheiro FORMATADO nas duas
+  convenções, o inventário virando lista, o rodízio, e o caso que mais importa:
+  **`ordemMercado` lança**.
+
+**Três coisas que só apareceram ao construir, e que mudaram o desenho:**
+
+1. **A Steam não devolve número nenhum** — dinheiro vem como texto já formatado
+   ("R$ 1.234,56", "$1,234.56"). A regra que resolve é a da ÚLTIMA ocorrência: o
+   separador que aparece por último é o decimal. E separador único com 3 casas
+   ("R$ 1,234") é MILHAR — ler isso como decimal erraria o preço por mil vezes.
+   É o teste que mais importa do arquivo.
+2. **Varrer preço demora, e o tick do orquestrador é serial.** Uma chamada por
+   item + limite de ~20/min significa que 100 itens levariam ~6 minutos
+   bloqueando os ciclos de todos os outros ativos. Por isso o preço é atualizado
+   em LOTE de 25 por rodada, em rodízio, e o item que ficou fora mantém o preço
+   anterior com a data dele (`preco_em`) — em vez de piscar entre valor e "—".
+3. **`candles()` LANÇA em vez de devolver lista vazia.** Este mercado não tem
+   candle, e uma lista vazia viraria indicador calculado sobre nada. É a mesma
+   escolha do `ordemMercado`: falhar alto e explicado.
+
+**O que a fase 1 deliberadamente NÃO faz**: chamar IA, abrir posição, calcular
+lucro ou mexer em qualquer decisão das outras plataformas. O item nasce
+desligado e o prompt da Steam nasce vazio.
+
+### ✅ Fase 2 — O ouvinte das atualizações do CS2 (ENTREGUE em 2026-08-05)
+
+**489 testes** (15 novos), suíte verde. Já testado contra a API REAL da Valve.
+
+| O que | Onde |
+| :--- | :--- |
+| `noticias()` no conector (ISteamNews, filtro por `feedname`, limpeza de BBCode) | `src/conectores/steam/` |
+| Detecção de notícia nova por `gid` + persistência | `plataformas/STEAM/dados/noticias` |
+| Aviso no Telegram (evento próprio `steam`) | `src/notificacoes/telegram.js` |
+| Agendamento pelo intervalo que o dono configurou na tela (padrão 30 min) | `src/nucleo/orquestrador.js` |
+| Card "Atualizações do CS2" na seção Steam, com a nota inteira | `dashboard/public/app.js` |
+
+- Funções PURAS separadas para poder testar sem rede: `noticiasNovas(feed, ultimoGid)`,
+  `limparBBCode(texto)`, `resumirNota(texto, limite)`.
+- Testes: notícia repetida não avisa duas vezes; feed fora do ar não derruba o
+  tick; BBCode limpo; nota gigante truncada sem cortar no meio de uma palavra.
+- **Entrega sozinha**: mesmo que o dono nunca ligue a IA da Steam, ele passa a
+  receber "saiu atualização do CS2" no Telegram.
+
+**Duas decisões que o desenho exigiu:**
+
+1. **A novidade é decidida pelo `gid`, nunca pela data nem pelo título.** Todos
+   os anúncios do CS2 se chamam "Counter-Strike 2 Update", e a Valve EDITA notas
+   já publicadas — a data muda. Só o id é estável.
+2. **A primeira leitura não avisa nada.** Sem memória do que já houve, os 10
+   anúncios existentes pareceriam novos e o dono levaria 10 mensagens logo
+   depois de configurar. O primeiro ciclo só aprende o que existe.
+
+**A lição da fase, e ela é velha conhecida deste projeto:** o teste sintético
+passava e o código estava errado. Bastou chamar a API DE VERDADE para os três
+defeitos aparecerem de uma vez — a Valve escapa colchete literal
+(`\[ GAMEPLAY ]`), fecha item de lista com `[/*]` (que não é letra e escapa de
+qualquer regra genérica de tag) e embrulha o texto do item em `[p]`, o que fazia
+o marcador ficar sozinho numa linha e o texto cair na seguinte. O resultado ia
+para o prompt como um parágrafo ilegível. Agora existe um teste de regressão
+montado a partir de uma nota de produção real.
+
+### ✅ Fase 3 — A IA analisa os itens marcados (ENTREGUE em 2026-08-05)
+
+**501 testes** (12 novos), suíte verde.
+
+| O que | Onde |
+| :--- | :--- |
+| Flag `usaRegrasGerais` na plataforma (só a STEAM nasce `false`) | `src/ia/montadorPrompt.js` |
+| Camada nova de NOTÍCIAS DO JOGO, com a data do anúncio | `src/ia/montadorPrompt.js` |
+| `analise_forcada` no estado do item, consumido e zerado uma vez | `orquestrador.js` + `cicloAtivo.js` |
+| Editor do prompt da Steam na seção própria (é o `template` da plataforma) | `dashboard/public/app.js` |
+| Taxas: compra 0%, venda **13,04%** (o "15% por cima" da Steam) | seed da config do item |
+| Recomendação vira card na tela + aviso no Telegram | reaproveita o modo assistido da V6.0 |
+
+- Ordem das camadas para um item da Steam: prompt da Steam (no lugar das regras
+  gerais) → identidade do item → prompt do item → **notícias do jogo** → contexto
+  do dono → `CONTRATO_SAIDA` por último, como sempre.
+**O problema do candle, resolvido com as DUAS saídas ao mesmo tempo.** O ciclo
+calcula indicadores a partir de candles, e este mercado não tem candle nenhum:
+ligar um item faria a coleta falhar. As opções eram analisar sem indicadores
+(flag de manifest) ou o bot construir a própria série. Foram as duas, porque
+sozinhas nenhuma bastava:
+
+- `usaIndicadores: false` faz o ciclo **não pedir candle** e mandar
+  `rsi`/`macd`/`medias_moveis`/`volatilidade` como **`null` explícito**. Ausente
+  seria pior: a IA suporia que esqueceram de enviar. No lugar entram
+  `unidades_vendidas_24h` e `preco_mediano`, que este mercado informa de verdade.
+- `seriePreco.js` guarda um ponto por coleta e responde a pergunta que faltava —
+  "está caro ou barato em relação à semana passada?". Começa cega e enxerga mais
+  a cada dia. **Janela que a série ainda não cobre volta `null`, nunca 0**: é a
+  diferença entre "não subiu" e "não sei", e confundir as duas foi o que cegou a
+  assimetria na V8.1.
+
+**Um bug real, achado ao ligar a tela:** a moeda da carteira Steam é `BRLS`, de
+4 letras, e o `Intl` do navegador só aceita código ISO de 3 — abrir a tela de um
+item derrubaria a página inteira com um `RangeError`. O bot já era resiliente a
+isso desde a V8.4 (`formatarDinheiro`); a dashboard não era, porque reimplementa
+a formatação (é a dívida técnica da prioridade 8, cobrando de novo).
+- `usaSupervisao: false`: o supervisor semanal audita decisão de entrada em ativo
+  financeiro, com réguas que não valem aqui.
+- Testes: as OUTRAS plataformas continuam recebendo as regras gerais (é o caso
+  que protege o sistema inteiro); a camada de notícia entra na posição certa;
+  notícia nova fura o filtro de variação **uma vez** e não toda hora.
+
+### ✅ Fase 4 — Registro das operações e o livro de posições (ENTREGUE em 2026-08-05)
+
+Esta fase custou uma linha de código, e isso é o ponto: **nada de novo precisou
+existir.** Um item marcado é um ativo de uma plataforma `assistida: true`, então
+a tela de ativo que a V6.0 construiu para a Toro já traz, sem nenhuma adaptação,
+a recomendação da IA, as posições abertas, o histórico e o formulário "Registrar
+operação manual" — que grava na fila `operacoes_manuais` de sempre.
+
+O que faltava era só **chegar lá**: item marcado ganhou o link "ver análise e
+registrar operação" no card do inventário.
+
+- Compra abre posição `manual` com o custo informado; venda abate FIFO ou por
+  lote e realiza o lucro. Lucro por lote, stop-loss e folga do chão passam a
+  valer como em qualquer ativo.
+- Com taxa de venda de 13,04%, o `preco_minimo_venda_lucrativa` de um item
+  comprado a R$ 100 é **R$ 115**, pela fórmula canônica de sempre — nenhuma conta
+  nova, nenhum caso especial.
+- O dinheiro continua fora do patrimônio consolidado e do comparativo × CDI, sem
+  nenhum `if`: a moeda `BRLS` não tem cotação em `global/cambio`, e o código que
+  consolida em reais já deixa de fora quem não tem cotação (reportando em
+  `moedas_sem_cambio`).
+
+### 🔄 Fase 5 — Refinamentos (2 de 3 entregues em 2026-08-05)
+
+- ✅ **Série histórica própria** — entregue na fase 3, porque a análise dependia
+  dela. O gráfico de preço da tela do item também já existe: vem do `historico`,
+  que o ciclo grava a cada análise, como em qualquer ativo.
+- ✅ **Alerta de preço-alvo por item** — "avise se cair abaixo de X" / "se subir
+  acima de Y", no Telegram. **510 testes** (9 novos).
+  - É a forma BARATA de vigiar: não gasta chamada de IA, não abre posição e vale
+    para qualquer item do inventário, marcado ou não. O dono pode acompanhar
+    cinquenta itens e mandar a IA analisar três.
+  - Pega carona nos preços que a rodada do inventário acabou de buscar —
+    nenhuma consulta nova à Steam, nenhuma leitura nova no tick.
+  - **A regra é um aviso por TRAVESSIA, com rearme automático**, e ela é o
+    coração do recurso: sem o rearme, um item parado abaixo do alvo geraria um
+    aviso por hora para sempre, e o dono desligaria os avisos — que é o pior
+    desfecho possível. Sem o disparo na travessia, ele descobriria a queda
+    tarde. Nove testes guardam exatamente esse par.
+  - O "já avisei" mora no BANCO, não em memória: o bot reinicia a cada deploy, e
+    memória volátil reenviaria os alertas já dados a cada atualização do código.
+    O documento tem dois donos em campos separados (`itens` da dashboard,
+    `estado` do bot), que o merge do Firestore mantém sem se atropelarem.
+- ⬜ **Comparação com mercado de terceiro** (Skinport/CSFloat) para enxergar o
+  spread. Exige mais uma fonte de dados e uma chave — só vale se o dono
+  realmente for vender fora da Steam, o que a trava de 7 dias desencoraja.
+  **Único item do plano que continua aberto.**
+
+---
+
+### Já decidido pelo dono (2026-08-04)
+
+- **Inventário PÚBLICO** — confirmado. O bot descobre os itens pelo SteamID64
+  guardado na config; é o único caminho que não pede cookie de conta.
+- **Sem piso de valor**: todo item aparece na tela.
+- **Quem vai para a IA é escolha por item** (o check), não regra automática.
+- **Notificação só pelo Telegram.** A tela não avisa nada.
+- **Ouvir as atualizações do CS2 entra no escopo** (Fase 2), pela API oficial.
+
+### Decisões em aberto
+
+- **Fonte do histórico de preço**: viver só do que o bot coletar (começa cego,
+  mas limpo — Fase 5) ou usar `pricehistory` com cookie de conta (risco de
+  banimento)? A recomendação é a primeira.
+- **Item repetido no inventário** (5 cases iguais): um ativo com quantidade 5, ou
+  cinco linhas? O primeiro é o que combina com o resto do sistema.
+- **Quanto da nota de atualização vai no prompt**: os ~4.000 caracteres crus, ou
+  um resumo feito por uma chamada de IA à parte? Começar pelo cru — resumo é
+  mais uma chamada, mais uma quota e mais um lugar para inventar coisa.
+
+### Travas que não podem ser afrouxadas
+
+1. **Ordem nunca é enviada.** `ordemMercado`/`aguardarFill` lançam, e o executor
+   nem os chama em plataforma assistida. Automatizar compra na Steam exige cookie
+   da conta do dono — está fora, e não por falta de vontade.
+2. **O dinheiro da Steam não se mistura.** Moeda própria, fora do patrimônio
+   consolidado e fora do comparativo × CDI. É carteira presa: não dá para sacar.
+3. **A IA não busca notícia.** Ela lê o texto que o bot trouxe. Vale aqui como
+   vale para preço e indicador.
+
+Depende de: nada — com a tela própria, o contexto por Telegram (prioridade 7)
+deixou de ser pré-requisito.
+Relacionado: V6.0 (Toro assistida — a mesma forma, o mesmo motivo).
+
+## ⬜ 5 — Estudo "trader de 20 anos": onde este sistema perde dinheiro
+
+Pedido do dono, com estas palavras: *"atuando como um trader profissional com 20
+anos de experiência, faça um estudo sobre o projeto procurando formas de melhorar
+o desempenho do objetivo do projeto (lucrar)"*.
+
+Não é código: é uma análise do sistema inteiro — prompt, Motor, taxas, tamanho de
+posição, escolha de ativos — procurando onde o dinheiro vaza. Fica em 5 porque
+depende de números para não virar opinião, e os números bons chegam em 12/08.
+
+## ⬜ 6 — Índices e dados de ações para a IA (Financial Modeling Prep)
+
+Estudar levar índices e fundamentos de ações para a análise: hoje a IA só vê
+preço e indicadores técnicos do próprio ativo. Verificar quais APIs entregam isso
+(a **Financial Modeling Prep** foi a lembrada) e a que custo.
+
+Cuidado que já se conhece: dado novo no prompt é dado que alguém precisa
+calcular no CÓDIGO antes (princípio 1.1 do CLAUDE.md — a IA nunca calcula nem
+consulta API).
+
+## ⬜ 7 — Contexto por mensagem no Telegram (a antiga "V7.0 parte 2")
+
+- Atualizar o contexto de cada ativo pelo Telegram: o dono manda uma notícia e
+  ela é gravada no doc `contexto` (existente desde a V2). Provavelmente precisa
+  de IA para identificar de qual ativo a notícia fala.
+- Exige **receber** mensagens (webhook ou long polling), não só enviar — é uma
+  mudança de natureza diferente da parte 1, que já está entregue.
+
+## ⬜ 8 — Dívida técnica da dashboard
+
+Levantada pela análise de engenharia (V8.4) e deixada de fora por decisão, porque
+são dias de trabalho e não mudam nenhum número medido:
+
+- **A dashboard duplica a camada de banco.** `firebaseClient.js` diz ser "a ÚNICA
+  camada de persistência" e não é: são 43 caminhos de Firestore digitados à mão
+  no `app.js`, mais fórmulas do Motor reimplementadas. Quando um documento muda
+  de forma, são dois lugares para acertar e nada avisa se você acertar só um.
+- **`app.js` tem 2.522 linhas e nenhum teste** (só o freio de login, extraído na
+  V7.4). É a superfície que o dono usa todo dia e a única sem rede de segurança.
+
+## ⬜ 9 — App Check (reCAPTCHA Enterprise)
+
+A trava que de fato impede usar a `apiKey` pública fora do app, imposta no Auth e
+no Firestore. Não afeta o bot (Admin SDK não passa por App Check). Exige
+configuração no console, não só código. Contexto na V7.4 — o freio de login
+entregue lá protege o dono, não barra ataque.
+
+## ⬜ 10 — Cálculo do IR sobre os lucros (a antiga "V9.0")
+
+- O sistema apura o imposto de renda devido sobre os lucros das operações que ele
+  mesmo registrou (cripto e, futuramente, ações), já considerando as regras de
+  isenção aplicáveis (ex.: limite mensal de vendas) e separando swing trade de
+  day trade.
+- Saída prática: valor da DARF do mês (ou "isento"), com memória de cálculo — os
+  dados de operações/lucros já existem no Firestore.
+
+## ⬜ 11 — Chat IA sobre o próprio projeto (a antiga "V10.0")
+
+- Chat que entenda o código, a estrutura e as funções, e responda perguntas do
+  dono. **Nunca altera nada — apenas lê o manual.md**
+  - Para isso o manual.md deve estar muito bem explicado
+- Chat que ajude a escrever CONTEXTO melhor para a IA analista: o dono passa uma
+  notícia e ele devolve um texto bem feito. Quando solicitado, pode ler o
+  contexto e o prompt do analista para ajudar a melhorá-los.
+
+---
+
+# 4 · 📎 Anexos
+
+Registros encerrados. Ficam porque ainda descrevem o sistema de hoje ou explicam
+por que ele é como é.
+
+## 📎 Anexo A — Pedidos avulsos do dono, já respondidos
+
+- ✅ ~~Analisar segurança das key e garantir que estão longe do frontend diretamente, por segurança~~
+  (2026-07-25) FEITO — ver **V7.1**.
+- ✅ ~~Tem uma posição da petrobras que está em lucro, mas parece que o bot já perdeu a chance de vender no melhor preço…~~
+  (2026-07-24) RESPONDIDO — era PBR/Tastytrade em simulação, e a causa é que a IA
+  praticamente não decide VENDER (3 em 565 análises): o prompt a faz avaliar só
+  ENTRADA. Diagnóstico completo na **V6.6.1**; o que restou é a prioridade 3.
+- ✅ ~~Criação do agente semanal que vai estudar as decisões da IA e sugerir melhorias para a IA analista~~
+  (2026-07-25) FEITO — ver **V7.2**. Foi além de sugerir: ele **escreve** a camada
+  de prompt, com kill-switch e histórico.
+- ✅ ~~Add rate limit, para evitar ataques de login infinito~~
+  (2026-07-25) FEITO — ver **V7.4**. Atenção à premissa corrigida lá: limite no
+  cliente não barra ataque; quem barra é o Firebase (já ativo) e, se precisar, o
+  App Check (prioridade 9).
+- ✅ ~~Modo vendas: a IA com foco em vender tudo o que tem comprado com o melhor lucro possível~~
+  (2026-07-25) FEITO — ver **V8.0**. Entregue como LIQUIDAÇÃO (encerrar a carteira
+  com o menor prejuízo possível dentro de um prazo), não como "vender melhor" no
+  dia a dia.
 - ✅ ~~Resetar lucros, posições e saldos, semeando um caixa menor~~
-  (2026-07-27) FEITO — ver "✅ V8.6 — O RECOMEÇO". Ferramenta na V8.2
+  (2026-07-27) FEITO — ver **V8.6**. Ferramenta na V8.2
   (`scripts/resetar-dados.mjs` · MANUAL §8.8), com o caixa novo distribuído
-  entre MB, BN e TT. **Analisar os resultados antes de
-  migrar qualquer ativo para modo real continua valendo** — é o que a janela de
-  medição até 08/08 existe para permitir.
+  entre as três plataformas. **Analisar os resultados antes de
+  migrar qualquer ativo para modo real continua valendo** — é para isso que a
+  janela de medição existe.
+- ✅ ~~Estudar deixar o repo público ou criar outro repo para mostrar o projeto como portfólio~~
+  (2026-08-03) FEITO — ver **V8.9**. Virou cópia pública sanitizada; este
+  repositório continua privado.
 
-*Legenda: ✅ entregue · ❌ revertida · 🔄 planejada/em execução · ⬜ ideia futura.*
+## 📎 Anexo B — Preparação do recomeço (26/07) — CONCLUÍDA
+
+A operação em si está na V8.6. A tabela fica porque é o índice de por que cada
+uma daquelas versões existiu.
+
+| # | Item | Estado |
+| :--- | :--- | :--- |
+| 1 | A IA quase não vende — é defeito? | ✅ **Não é.** É a estratégia (saída pelo chão que sobe). Estava implícita no prompt e virou a §4.1 das regras gerais — V8.2 |
+| 2 | Carteira da Toro inconsistente | ✅ Limpa (V8.2) |
+| 3 | Não existe rotina de reset | ✅ `scripts/resetar-dados.mjs` (V8.2) |
+| 4 | Conferir os campos de medição | ✅ Contrato testado (V8.3) |
+| 5 | Análise de engenharia do código | ✅ Feita (V8.4) |
+| 6 | Revisão da véspera do reset | ✅ Trava do script + PICO do lote (V8.5) |
+
+**Item 4 — por que ele existiu.** Achado da V8.1: `stop_loss_inicial` não existia
+em 100% dos lotes fechados, e isso cegou a métrica de assimetria sem ninguém
+perceber. Um campo faltando = reset desperdiçado, e só se descobre semanas
+depois. O remédio virou teste permanente (`tests/camposDeMedicao.test.js`).
+
+**O que NÃO bloqueava o reset e segue aberto:** IR, Chat IA, contexto por
+Telegram, App Check e dados de índices — hoje as prioridades 6, 7, 9, 10 e 11 do
+bloco 3.
+
+---
+
+*Legenda: ✅ entregue · ❌ revertida · 🔄 em execução · ⬜ a fazer · 📎 anexo.*

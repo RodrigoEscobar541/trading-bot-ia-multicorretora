@@ -29,8 +29,6 @@ const db = firestoreDatabaseId ? getFirestore(app, firestoreDatabaseId) : getFir
 // Único usuário autorizado a usar o painel. As regras do Firestore
 // (firestore.rules) impõem o mesmo UID no servidor — esta checagem é só a
 // camada de interface (mensagem clara em vez de erros de permissão).
-// PLACEHOLDER nesta cópia pública: troque pelo UID da sua conta do Firebase
-// Auth, o mesmo que está em `firestore.rules`.
 const UID_AUTORIZADO = 'COLE_AQUI_O_UID_DO_DONO';
 
 const $ = (id) => document.getElementById(id);
@@ -41,14 +39,35 @@ const $ = (id) => document.getElementById(id);
 const formatadores = new Map(); // moeda → { cheio, compacto }
 function fmtMoeda(moeda = 'BRL') {
   if (!formatadores.has(moeda)) {
-    formatadores.set(moeda, {
+    formatadores.set(moeda, criarFormatadores(moeda));
+  }
+  return formatadores.get(moeda);
+}
+
+/**
+ * Formatadores de uma moeda. `Intl` só aceita código ISO de 3 letras e LANÇA
+ * em qualquer outro — e nem toda "moeda" deste sistema é ISO: a carteira Steam
+ * é `BRLS`, deliberadamente diferente de `BRL` para que nada some as duas.
+ * Sem este fallback, abrir a tela de um item da Steam quebraria a página
+ * inteira num RangeError.
+ */
+function criarFormatadores(moeda) {
+  try {
+    return {
       cheio: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: moeda }),
       compacto: new Intl.NumberFormat('pt-BR', {
         style: 'currency', currency: moeda, notation: 'compact', maximumFractionDigits: 1,
       }),
-    });
+    };
+  } catch {
+    // Moeda fora do padrão ISO: número no formato local, com o código na frente.
+    const numero = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const compacto = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 });
+    return {
+      cheio: { format: (v) => `${moeda} ${numero.format(v)}` },
+      compacto: { format: (v) => `${moeda} ${compacto.format(v)}` },
+    };
   }
-  return formatadores.get(moeda);
 }
 let moedaTela = 'BRL'; // moeda da plataforma exibida (atualizada pela rota)
 const dinheiro = (v, moeda = moedaTela) =>
@@ -282,6 +301,10 @@ function assinarAtivoLeve(pid, aid, cancelamentos) {
 }
 
 // ------------------------------------------------------------------- rotas
+// A Steam tem tela PRÓPRIA (não a de plataforma): o que interessa nela é o
+// inventário com foto e o check por item, não chaves de corretora.
+const PLATAFORMA_STEAM = 'STEAM';
+
 let rota = { tipo: 'geral' };
 
 function aplicarRota() {
@@ -294,6 +317,8 @@ function aplicarRota() {
     rota = { tipo: 'regras' };
   } else if (partes[0] === 'supervisao') {
     rota = { tipo: 'supervisao' };
+  } else if (partes[0] === 'steam') {
+    rota = { tipo: 'steam', plataforma: PLATAFORMA_STEAM };
   } else {
     rota = { tipo: 'geral' };
   }
@@ -303,6 +328,7 @@ function aplicarRota() {
   $('tela-plataforma').hidden = rota.tipo !== 'plataforma';
   $('tela-regras').hidden = rota.tipo !== 'regras';
   $('tela-supervisao').hidden = rota.tipo !== 'supervisao';
+  $('tela-steam').hidden = rota.tipo !== 'steam';
   fecharMenuMobile();
   assinarTela();
   renderMenu();
@@ -369,6 +395,28 @@ function assinarTela() {
         renderRegras();
       }),
     );
+  } else if (rota.tipo === 'steam') {
+    cancelTela.push(
+      // O retrato do inventário é publicado pelo BOT: os endpoints da Steam não
+      // liberam CORS, então o navegador não consegue lê-los direto.
+      onSnapshot(doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'inventario'), (snap) => {
+        telaDados.inventario = snap.data() ?? null;
+        renderSteam();
+        renderSteamAlertas(); // o seletor e os preços da tabela saem daqui
+      }),
+      onSnapshot(doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'alertas'), (snap) => {
+        telaDados.alertas = snap.data() ?? null;
+        renderSteamAlertas();
+      }),
+      onSnapshot(doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'noticias'), (snap) => {
+        telaDados.noticias = snap.data() ?? null;
+        renderSteamNoticias();
+      }),
+      onSnapshot(doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'template'), (snap) => {
+        telaDados.steamPrompt = snap.data() ?? null;
+        renderSteamPrompt();
+      }),
+    );
   } else if (rota.tipo === 'supervisao') {
     cancelTela.push(
       onSnapshot(doc(db, 'global', 'supervisao'), (snap) => {
@@ -410,6 +458,13 @@ function renderTudoDaRota() {
     renderConfigAtivo();
   }
   if (rota.tipo === 'plataforma') renderPlataforma();
+  if (rota.tipo === 'steam') {
+    renderSteam();
+    renderSteamConfig();
+    renderSteamAlertas();
+    renderSteamNoticias();
+    renderSteamPrompt();
+  }
   if (rota.tipo === 'regras') renderRegras();
   if (rota.tipo === 'supervisao') {
     renderSupervisao();
@@ -434,8 +489,14 @@ function renderMenu() {
   nav.append(link('Visão geral', '#/geral', rota.tipo === 'geral'));
   nav.append(link('🧠 Regras gerais da IA', '#/regras', rota.tipo === 'regras'));
   nav.append(link('🧭 Supervisão semanal', '#/supervisao', rota.tipo === 'supervisao'));
+  // A Steam só aparece no menu depois de semeada pelo bot.
+  if (plataformas.has(PLATAFORMA_STEAM)) {
+    nav.append(link('🎮 Steam (skins do CS2)', '#/steam', rota.tipo === 'steam'));
+  }
 
   for (const [pid, p] of plataformas) {
+    // A Steam tem tela própria (acima) — não entra na lista de plataformas.
+    if (pid === PLATAFORMA_STEAM) continue;
     const grupo = document.createElement('div');
     grupo.className = 'menu-grupo';
     grupo.textContent = p.dados?.nome || pid;
@@ -485,6 +546,11 @@ function renderTitulo() {
   } else if (rota.tipo === 'supervisao') {
     $('titulo-tela').textContent = 'Supervisão semanal';
     badge.hidden = true;
+  } else if (rota.tipo === 'steam') {
+    $('titulo-tela').textContent = 'Steam — mercado de skins do CS2';
+    badge.textContent = '● ASSISTIDO — você executa';
+    badge.className = 'badge assistido';
+    badge.hidden = false;
   } else {
     $('titulo-tela').textContent = 'Visão geral';
     badge.hidden = true;
@@ -1111,7 +1177,7 @@ function renderTelegram(dados) {
   $('tg-token').placeholder = temToken
     ? 'token salvo — deixe em branco para manter'
     : 'cole aqui o token do @BotFather';
-  for (const ev of ['compra', 'venda', 'recomendacao', 'problema', 'relatorio', 'supervisao']) {
+  for (const ev of ['compra', 'venda', 'recomendacao', 'problema', 'relatorio', 'supervisao', 'noticia_jogo', 'alerta_preco']) {
     $(`tg-ev-${ev}`).checked = dados?.eventos?.[ev] !== false;
   }
 }
@@ -1145,6 +1211,8 @@ $('form-telegram').addEventListener('submit', async (ev) => {
       problema: $('tg-ev-problema').checked,
       relatorio: $('tg-ev-relatorio').checked,
       supervisao: $('tg-ev-supervisao').checked,
+      noticia_jogo: $('tg-ev-noticia_jogo').checked,
+      alerta_preco: $('tg-ev-alerta_preco').checked,
     },
     atualizado_em: new Date().toISOString(),
   };
@@ -2288,6 +2356,397 @@ $('form-plataforma').addEventListener('submit', async (ev) => {
       await setDoc(doc(db, 'plataformas', rota.plataforma, 'dados', 'api'), api, { merge: true });
     }
     status.textContent = 'plataforma salva ✓ (vale no próximo ciclo do bot)';
+  } catch (e) {
+    status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
+  }
+});
+
+// ------------------------------------------- Steam: skins do CS2 (assistida)
+// Tela própria porque o que importa aqui é o INVENTÁRIO com foto e o check por
+// item — nada a ver com a tela de plataforma (chaves de corretora, pregão).
+// Tudo que aparece vem do Firestore: o navegador não consegue falar com a
+// Steam (sem CORS), quem lê é o bot.
+
+const STEAM_INTERVALOS_PADRAO = { analise_minutos: 60, precos_minutos: 60, noticias_minutos: 30 };
+const STEAM_INTERVALO_MINIMO = 15;
+
+/** O item está sendo analisado? A verdade é o ATIVO existir e estar ligado. */
+function steamItemAnalisado(id) {
+  const ativo = plataformas.get(PLATAFORMA_STEAM)?.ativos.get(id);
+  return Boolean(ativo) && ativo.config?.ativo !== false;
+}
+
+function renderSteam() {
+  const inv = telaDados.inventario ?? {};
+  const itens = Array.isArray(inv.itens) ? inv.itens : [];
+  const comPreco = itens.filter((i) => Number.isFinite(i.valor_total));
+  const total = comPreco.reduce((s, i) => s + i.valor_total, 0);
+  const marcados = itens.filter((i) => steamItemAnalisado(i.id)).length;
+
+  $('steam-qtd').textContent = itens.length === 0 ? '—' : `${itens.length}`;
+  // O total soma só o que tem preço; dizer quantos ficaram de fora evita o
+  // dono achar que o inventário inteiro vale isso.
+  $('steam-total').textContent = itens.length === 0
+    ? '—'
+    : `${fmtMoeda('BRL').cheio.format(total)}${comPreco.length < itens.length ? ` (${itens.length - comPreco.length} sem preço)` : ''}`;
+  $('steam-marcados').textContent = itens.length === 0 ? '—' : `${marcados}`;
+  $('steam-atualizado').textContent = inv.atualizado_em
+    ? new Date(inv.atualizado_em).toLocaleString('pt-BR')
+    : 'ainda não — o bot monta o retrato no próximo ciclo';
+
+  const erro = $('steam-erro');
+  erro.hidden = !inv.erro;
+  erro.textContent = inv.erro ? `⚠ última tentativa falhou: ${inv.erro}` : '';
+
+  const grade = $('steam-itens');
+  grade.textContent = '';
+  if (itens.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'texto-secundario';
+    p.textContent = 'Nenhum item ainda. Confira o SteamID64 abaixo e se o inventário está público.';
+    grade.append(p);
+    return;
+  }
+
+  for (const item of itens) {
+    const cartao = document.createElement('article');
+    cartao.className = 'steam-item';
+
+    if (item.imagem) {
+      const img = document.createElement('img');
+      img.src = item.imagem;
+      img.alt = '';
+      img.loading = 'lazy';
+      cartao.append(img);
+    }
+
+    const nome = document.createElement('p');
+    nome.className = 'steam-item-nome';
+    // textContent: nome de item vem de fora e nunca vira HTML (anti-XSS).
+    nome.textContent = item.market_hash_name;
+    nome.title = item.market_hash_name;
+    cartao.append(nome);
+
+    const linha = document.createElement('p');
+    linha.className = 'texto-secundario';
+    const preco = Number.isFinite(item.preco) ? fmtMoeda('BRL').cheio.format(item.preco) : '—';
+    linha.textContent = item.quantidade > 1
+      ? `${item.quantidade}× ${preco} = ${Number.isFinite(item.valor_total) ? fmtMoeda('BRL').cheio.format(item.valor_total) : '—'}`
+      : preco;
+    cartao.append(linha);
+
+    if (!item.negociavel) {
+      const aviso = document.createElement('p');
+      aviso.className = 'texto-secundario';
+      aviso.textContent = 'não vendável no mercado';
+      cartao.append(aviso);
+    }
+
+    const rotulo = document.createElement('label');
+    rotulo.className = 'alternador';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = steamItemAnalisado(item.id);
+    check.disabled = !item.negociavel; // sem preço não há o que analisar
+    check.addEventListener('change', () => marcarItemSteam(item, check));
+    const texto = document.createElement('span');
+    texto.textContent = 'analisar com IA';
+    rotulo.append(check, texto);
+    cartao.append(rotulo);
+
+    // Item marcado tem tela própria (a mesma de qualquer ativo): é lá que ficam
+    // a recomendação da IA, as posições e o formulário para você registrar a
+    // compra ou a venda que fez na Steam.
+    if (steamItemAnalisado(item.id)) {
+      const link = document.createElement('a');
+      link.href = `#/ativo/${PLATAFORMA_STEAM}/${item.id}`;
+      link.className = 'texto-secundario';
+      link.textContent = 'ver análise e registrar operação →';
+      cartao.append(link);
+    }
+
+    grade.append(cartao);
+  }
+}
+
+/**
+ * Marcar CRIA o ativo (ou o religa); desmarcar apenas o desliga — nunca apaga,
+ * porque o histórico do item é dele. Mesmo caminho do "cadastrar ativo" das
+ * outras plataformas, só que disparado por um check.
+ */
+async function marcarItemSteam(item, check) {
+  const status = $('steam-status');
+  const ligar = check.checked;
+  check.disabled = true;
+  status.textContent = ligar ? 'ligando análise…' : 'desligando…';
+  const intervalos = steamIntervalos();
+  try {
+    const ref = doc(db, 'plataformas', PLATAFORMA_STEAM, 'ativos', item.id);
+    if (ligar) {
+      await setDoc(ref, {
+        manifest: {
+          id: item.id,
+          nome: item.nome || item.market_hash_name,
+          tipo: 'skin',
+          plataforma: PLATAFORMA_STEAM,
+          par: item.market_hash_name, // o nome EXATO — é o que a API entende
+          mercado24h: true, // o mercado da Steam não fecha
+          usaSupervisao: false, // o supervisor audita ativo financeiro, não skin
+          // Este mercado não tem candle: sem histórico não há RSI, MACD nem
+          // média móvel. O ciclo pula os indicadores e passa a guardar o preço
+          // a cada coleta, montando a série própria do item.
+          usaIndicadores: false,
+          usaNoticias: true, // as notas de atualização do CS2 entram no prompt
+          intervaloPadrao: intervalos.analise_minutos,
+        },
+        config: {
+          ativo: true,
+          // Assistida: as operações que você registrar são REAIS.
+          modo_simulacao: false,
+          orcamento_percentual: 0,
+          tempo_entre_analises_minutos: intervalos.analise_minutos,
+          // A Steam cobra ~15% na venda, e nada na compra: o comprador paga X e
+          // o vendedor recebe X ÷ 1,15. Em percentual do valor bruto da venda
+          // isso é 13,04% — e faz o preço mínimo de venda lucrativa ser
+          // exatamente compra × 1,15.
+          taxa_compra_percentual: 0,
+          taxa_venda_percentual: 13.04,
+          minimo_ordem_valor: 0.03, // menor preço que o mercado da Steam aceita
+          minimo_ordem_quantidade: 1, // itens são inteiros
+        },
+      }, { merge: true });
+    } else {
+      await setDoc(ref, { config: { ativo: false } }, { merge: true });
+    }
+    status.textContent = ligar
+      ? `${item.market_hash_name} entrou na análise ✓`
+      : `${item.market_hash_name} saiu da análise (o histórico dele fica)`;
+  } catch (e) {
+    check.checked = !ligar;
+    status.textContent = `erro: ${e.code ?? e.message}`;
+  } finally {
+    check.disabled = !item.negociavel;
+  }
+}
+
+/** Os três intervalos como estão na tela, com o piso aplicado. */
+function steamIntervalos() {
+  const ler = (id, padrao) => {
+    const n = Number($(id).value);
+    return !Number.isFinite(n) || n <= 0 ? padrao : Math.max(STEAM_INTERVALO_MINIMO, Math.round(n));
+  };
+  return {
+    analise_minutos: ler('steam-int-analise', STEAM_INTERVALOS_PADRAO.analise_minutos),
+    precos_minutos: ler('steam-int-precos', STEAM_INTERVALOS_PADRAO.precos_minutos),
+    noticias_minutos: ler('steam-int-noticias', STEAM_INTERVALOS_PADRAO.noticias_minutos),
+  };
+}
+
+let steamConfigEditando = false;
+for (const id of ['steam-id64', 'steam-int-analise', 'steam-int-precos', 'steam-int-noticias']) {
+  $(id).addEventListener('focus', () => { steamConfigEditando = true; });
+  $(id).addEventListener('blur', () => { steamConfigEditando = false; });
+}
+
+function renderSteamConfig() {
+  if (steamConfigEditando) return; // não sobrescrever o que o dono está digitando
+  const p = plataformas.get(PLATAFORMA_STEAM)?.dados ?? {};
+  const i = { ...STEAM_INTERVALOS_PADRAO, ...(p.intervalos ?? {}) };
+  $('steam-id64').value = p.steam_id64 ?? '';
+  $('steam-int-analise').value = i.analise_minutos;
+  $('steam-int-precos').value = i.precos_minutos;
+  $('steam-int-noticias').value = i.noticias_minutos;
+}
+
+$('form-steam-config').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const status = $('steam-config-status');
+  const id64 = $('steam-id64').value.trim();
+  if (id64 && !/^\d{17}$/.test(id64)) {
+    status.textContent = 'SteamID64 são 17 dígitos — o número que aparece na URL do seu perfil';
+    return;
+  }
+  status.textContent = 'salvando…';
+  try {
+    await setDoc(
+      doc(db, 'plataformas', PLATAFORMA_STEAM),
+      { steam_id64: id64, intervalos: steamIntervalos() },
+      { merge: true },
+    );
+    steamConfigEditando = false;
+    status.textContent = 'configuração salva ✓ (o bot passa a usar em até 5 minutos)';
+  } catch (e) {
+    status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
+  }
+});
+
+// "Atualizar agora": grava uma MARCA no doc que o bot já lê a cada minuto
+// (global/controle), a mesma carona do "rodar supervisão agora". Nenhuma
+// leitura nova no tick, e o bot atende no próximo minuto.
+$('btn-steam-atualizar').addEventListener('click', async () => {
+  const status = $('steam-status');
+  status.textContent = 'pedindo ao bot…';
+  try {
+    await setDoc(doc(db, 'global', 'controle'), { inventario_solicitado_em: new Date().toISOString() }, { merge: true });
+    status.textContent = 'pedido enviado ✓ — o inventário é relido no próximo minuto (varrer os preços leva alguns)';
+  } catch (e) {
+    status.textContent = `erro: ${e.code ?? e.message}`;
+  }
+});
+
+/**
+ * Alertas de preço-alvo. A dashboard escreve os ALVOS (campo `itens`); o bot
+ * escreve só o estado das travessias já avisadas (campo `estado`) — campos
+ * separados de propósito, para um nunca apagar o outro no merge.
+ */
+function renderSteamAlertas() {
+  const itens = Array.isArray(telaDados.inventario?.itens) ? telaDados.inventario.itens : [];
+  const alvos = telaDados.alertas?.itens ?? {};
+
+  // O seletor lista todos os itens do inventário, marcados ou não: alerta não
+  // custa análise, então não faz sentido restringi-lo aos analisados.
+  const sel = $('steam-alerta-item');
+  const escolhido = sel.value;
+  sel.textContent = '';
+  for (const item of itens) {
+    const op = document.createElement('option');
+    op.value = item.id;
+    op.textContent = item.market_hash_name;
+    sel.append(op);
+  }
+  if (escolhido) sel.value = escolhido;
+
+  const lista = $('steam-alertas-ativos');
+  lista.textContent = '';
+  const ativos = Object.entries(alvos).filter(([, a]) => Number(a?.abaixo) > 0 || Number(a?.acima) > 0);
+  if (ativos.length === 0) return;
+
+  const tabela = document.createElement('table');
+  tabela.className = 'tabela';
+  const cab = tabela.insertRow();
+  for (const t of ['Item', 'Abaixo de', 'Acima de', 'Preço agora', '']) {
+    const th = document.createElement('th');
+    th.textContent = t;
+    cab.append(th);
+  }
+  for (const [id, alvo] of ativos) {
+    const item = itens.find((i) => i.id === id);
+    const linha = tabela.insertRow();
+    linha.insertCell().textContent = item?.market_hash_name ?? id;
+    linha.insertCell().textContent = Number(alvo.abaixo) > 0 ? dinheiro(Number(alvo.abaixo), 'BRLS') : '—';
+    linha.insertCell().textContent = Number(alvo.acima) > 0 ? dinheiro(Number(alvo.acima), 'BRLS') : '—';
+    linha.insertCell().textContent = Number.isFinite(item?.preco) ? dinheiro(item.preco, 'BRLS') : '—';
+    const acao = linha.insertCell();
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.className = 'botao-fantasma';
+    botao.textContent = 'remover';
+    botao.addEventListener('click', () => salvarAlertaSteam(id, null, null));
+    acao.append(botao);
+  }
+  lista.append(tabela);
+}
+
+async function salvarAlertaSteam(id, abaixo, acima) {
+  const status = $('steam-alerta-status');
+  status.textContent = 'salvando…';
+  try {
+    // Alvo vazio grava `null` em vez de apagar a chave: o Firestore não remove
+    // campo de mapa num merge, e `null` é o que o bot lê como "sem alvo".
+    await setDoc(
+      doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'alertas'),
+      { itens: { [id]: { abaixo: abaixo ?? null, acima: acima ?? null } } },
+      { merge: true },
+    );
+    status.textContent = abaixo || acima ? 'alerta salvo ✓' : 'alerta removido ✓';
+  } catch (e) {
+    status.textContent = `erro: ${e.code ?? e.message}`;
+  }
+}
+
+$('form-steam-alerta').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const id = $('steam-alerta-item').value;
+  if (!id) {
+    $('steam-alerta-status').textContent = 'escolha um item';
+    return;
+  }
+  const abaixo = Number($('steam-alerta-abaixo').value) || null;
+  const acima = Number($('steam-alerta-acima').value) || null;
+  if (!abaixo && !acima) {
+    $('steam-alerta-status').textContent = 'preencha ao menos um dos dois preços';
+    return;
+  }
+  await salvarAlertaSteam(id, abaixo, acima);
+  $('steam-alerta-abaixo').value = '';
+  $('steam-alerta-acima').value = '';
+});
+
+/**
+ * Últimas atualizações do CS2. Só desenha o que o bot já guardou — a Steam não
+ * é consultada pelo navegador em nenhum momento.
+ */
+function renderSteamNoticias() {
+  const alvo = $('steam-noticias');
+  alvo.textContent = '';
+  const itens = Array.isArray(telaDados.noticias?.itens) ? telaDados.noticias.itens : [];
+  if (itens.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'texto-secundario';
+    p.textContent = 'Nenhuma ainda — o robô procura no intervalo configurado acima.';
+    alvo.append(p);
+    return;
+  }
+
+  for (const n of itens.slice(0, 5)) {
+    const item = document.createElement('details');
+    item.className = 'steam-noticia';
+
+    const resumo = document.createElement('summary');
+    const quando = n.data ? new Date(n.data).toLocaleDateString('pt-BR') : '';
+    // textContent sempre: o texto vem da Valve e nunca vira HTML (anti-XSS).
+    resumo.textContent = quando ? `${quando} — ${n.titulo}` : n.titulo;
+    item.append(resumo);
+
+    const corpo = document.createElement('p');
+    corpo.className = 'texto-secundario';
+    corpo.style.whiteSpace = 'pre-wrap';
+    corpo.textContent = n.conteudo || '(sem texto)';
+    item.append(corpo);
+
+    if (n.url) {
+      const link = document.createElement('a');
+      link.href = n.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'abrir na Steam';
+      item.append(link);
+    }
+    alvo.append(item);
+  }
+}
+
+let steamPromptEditando = false;
+$('texto-steam-prompt').addEventListener('focus', () => { steamPromptEditando = true; });
+$('texto-steam-prompt').addEventListener('blur', () => { steamPromptEditando = false; });
+
+function renderSteamPrompt() {
+  $('steam-prompt-versao').textContent = telaDados.steamPrompt?.versao ? `(versão ${telaDados.steamPrompt.versao})` : '';
+  if (!steamPromptEditando) $('texto-steam-prompt').value = telaDados.steamPrompt?.conteudo ?? '';
+}
+
+$('form-steam-prompt').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const status = $('steam-prompt-status');
+  status.textContent = 'salvando…';
+  try {
+    await setDoc(doc(db, 'plataformas', PLATAFORMA_STEAM, 'dados', 'template'), {
+      conteudo: $('texto-steam-prompt').value,
+      versao: (telaDados.steamPrompt?.versao ?? 0) + 1,
+      atualizado_em: new Date().toISOString(),
+    });
+    steamPromptEditando = false;
+    status.textContent = 'prompt salvo ✓';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
   }

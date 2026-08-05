@@ -41,6 +41,7 @@ import {
 } from '../regras/regrasEngine.js';
 import { decidir } from '../ia/iaClient.js';
 import { montarPromptSistema } from '../ia/montadorPrompt.js';
+import { registrarPreco } from './seriePreco.js';
 import {
   obterEstadoAtivo,
   salvarEstadoAtivo,
@@ -92,6 +93,11 @@ export async function executarCicloAtivo({
   conector,
   estado: estadoConhecido = null,
   modoVendas = null,
+  // Pula o filtro de variação NESTA rodada. Hoje quem pede é a chegada de uma
+  // notícia do jogo (fase 3 da Steam): sai a atualização, o preço ainda não se
+  // moveu, a variação é 0,0% — e é exatamente o minuto em que a IA teria algo a
+  // dizer. Sem isto o filtro engoliria o evento.
+  forcarAnalise = false,
   decidirFn = decidir,
 }) {
   const pid = plataforma.id;
@@ -145,7 +151,7 @@ export async function executarCicloAtivo({
   const base = estado.preco_ultima_analise;
   const variacao = base ? (Math.abs(precoAtual - base) / base) * 100 : null;
 
-  if (base !== null && variacao < config.percentual_minimo_variacao) {
+  if (!forcarAnalise && base !== null && variacao < config.percentual_minimo_variacao) {
     await salvarEstadoAtivo(pid, aid, { horario_ultima_verificacao: agora });
     await registrarAnaliseAtivo(pid, aid, {
       tipo: 'verificacao',
@@ -168,29 +174,60 @@ export async function executarCicloAtivo({
   // '1d' nos ativos de swing trade (B3 assistida). O núcleo continua agnóstico
   // — nada de `if (plataforma)`: só configuração.
   const manifest = ativo.manifest;
-  const candlesAnalise = await conector.candles(par, manifest.resolucaoAnalise || '15m', 100);
-  const candlesCtx = await conector.candles(
-    par,
-    manifest.resolucaoContexto || '1h',
-    Number(manifest.candlesContexto) || 24,
-  );
-  const fechamentos = candlesAnalise.map((c) => c.fechamento);
 
-  const macd = calcularMACD(fechamentos);
-  const mms = calcularMediasMoveis(fechamentos);
-  const cruzamento = detectarCruzamento(fechamentos); // SMA 9/21, janela de 3 candles
-  const indicadores = {
-    rsi: r1(calcularRSI(fechamentos)),
-    stoch_rsi: Math.round(calcularStochRSI(fechamentos) * 1000) / 1000, // 0–1 (9/9/5)
-    macd: { linha_macd: r2(macd.linha_macd), linha_sinal: r2(macd.linha_sinal), histograma: r2(macd.histograma) },
-    medias_moveis: { mm9: r2(mms.mm9), mm21: r2(mms.mm21), mm50: r2(mms.mm50) },
-    cruzamento_mm_9_21: {
-      mm9_acima_mm21: cruzamento.curta_acima_longa,
-      cruzamento_recente: cruzamento.cruzamento_recente,
-    },
-    volume_24h: r2(volumeFinanceiro(candlesCtx)), // financeiro, na moeda da plataforma
-    volatilidade_24h: r2(volatilidadeRange(ticker.maxima, ticker.minima)),
-  };
+  // Mercado SEM candle (`usaIndicadores: false` — hoje as skins da Steam):
+  // não existe série histórica para comprar, então indicador técnico não é
+  // "opcional", é impossível. Em vez de fabricar número, o ativo é analisado
+  // com o que o mercado dá de verdade (preço, mediana, unidades vendidas) mais
+  // a série que o PRÓPRIO bot acumula (seriePreco.js). Continua sem `if
+  // (STEAM)`: o comportamento vem do manifest, como todo o resto.
+  const semIndicadores = manifest.usaIndicadores === false;
+  let indicadores = null;
+  let serie = null;
+
+  if (semIndicadores) {
+    serie = await registrarPreco(pid, aid, precoAtual, agora);
+    indicadores = {
+      // O que este mercado informa e que É comparável entre dias: quantas
+      // unidades trocaram de mão em 24 h. Não é volume financeiro.
+      unidades_vendidas_24h: Number.isFinite(ticker.volume) ? ticker.volume : null,
+      // Preço mediano das últimas vendas — quando existe, é o "preço justo"
+      // contra o qual a menor oferta pode estar cara ou barata.
+      preco_mediano: Number.isFinite(ticker.mediana) ? r2(ticker.mediana) : null,
+      // Explicitamente null: a IA precisa SABER que estes não existem aqui, em
+      // vez de recebê-los ausentes e supor que esqueceram de enviar.
+      rsi: null,
+      macd: null,
+      medias_moveis: null,
+      volatilidade_24h: null,
+    };
+  } else {
+    // Resolução dos candles vem do MANIFEST (V6.0): 15m/1h no padrão (cripto);
+    // '1d' nos ativos de swing trade (B3 assistida).
+    const candlesAnalise = await conector.candles(par, manifest.resolucaoAnalise || '15m', 100);
+    const candlesCtx = await conector.candles(
+      par,
+      manifest.resolucaoContexto || '1h',
+      Number(manifest.candlesContexto) || 24,
+    );
+    const fechamentos = candlesAnalise.map((c) => c.fechamento);
+
+    const macd = calcularMACD(fechamentos);
+    const mms = calcularMediasMoveis(fechamentos);
+    const cruzamento = detectarCruzamento(fechamentos); // SMA 9/21, janela de 3 candles
+    indicadores = {
+      rsi: r1(calcularRSI(fechamentos)),
+      stoch_rsi: Math.round(calcularStochRSI(fechamentos) * 1000) / 1000, // 0–1 (9/9/5)
+      macd: { linha_macd: r2(macd.linha_macd), linha_sinal: r2(macd.linha_sinal), histograma: r2(macd.histograma) },
+      medias_moveis: { mm9: r2(mms.mm9), mm21: r2(mms.mm21), mm50: r2(mms.mm50) },
+      cruzamento_mm_9_21: {
+        mm9_acima_mm21: cruzamento.curta_acima_longa,
+        cruzamento_recente: cruzamento.cruzamento_recente,
+      },
+      volume_24h: r2(volumeFinanceiro(candlesCtx)), // financeiro, na moeda da plataforma
+      volatilidade_24h: r2(volatilidadeRange(ticker.maxima, ticker.minima)),
+    };
+  }
 
   // --------------------------------------------------------------- carteira
   // Estado da plataforma lido UMA vez por ciclo (V5_2_Plan.MD §3.4): serve à
@@ -265,6 +302,10 @@ export async function executarCicloAtivo({
       variacao_percentual: r2(variacao ?? 0),
     },
     indicadores,
+    // Série construída pelo próprio bot, só nos mercados sem candle. Janela que
+    // a série ainda não cobre vem `null` — nunca 0, nunca "desde o começo
+    // disfarçado de 24 h".
+    ...(serie ? { serie_preco: serie } : {}),
     carteira: {
       saldo_disponivel: r2(carteira.saldo_moeda),
       saldo_ativo: rQtd(carteira.saldo_ativo),
@@ -307,14 +348,17 @@ export async function executarCicloAtivo({
   // identidade do ativo + prompt do ativo + contexto do usuário
   // (V2_Plan.MD §prompt) — tudo editável pela dashboard, lido pelo catálogo
   // cacheado (edições valem em até 5 min — V5_2_Plan.MD §3.3).
-  const { regrasGerais, regrasGeraisVenda, template, promptAtivo, supervisao, contexto } = await camadasPromptCache(pid, aid);
+  const { regrasGerais, regrasGeraisVenda, template, promptAtivo, supervisao, contexto, noticias } =
+    await camadasPromptCache(pid, aid);
   const promptSistema = montarPromptSistema({
     manifest: ativo.manifest,
+    plataforma, // `usaRegrasGerais: false` tira a 1ª camada (mercado de outra natureza)
     regrasGerais,
     regrasGeraisVenda, // substituem as normais enquanto a liquidação durar (V8)
     template,
     promptAtivo,
     supervisao, // camada escrita pelo supervisor semanal (V7.2), recortada por ativo
+    noticias, // atualizações do jogo, nas plataformas que as têm
     contexto,
     modoVendas,
     agora: new Date(agora),
