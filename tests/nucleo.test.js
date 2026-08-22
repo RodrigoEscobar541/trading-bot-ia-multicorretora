@@ -11,6 +11,8 @@ import {
   dentroDoHorarioDeMercado,
   deveAnalisarAgora,
   deveLimparEstadoEmMemoria,
+  marcaMudou,
+  esperaAposFalhaMs,
   executarRodada,
   limparEstadoAtivosEmMemoria,
   montarStatusBot,
@@ -18,6 +20,10 @@ import {
 import { invalidarCatalogo } from '../src/nucleo/catalogo.js';
 import { migrarV1paraV2 } from '../src/migracao/migrarV1paraV2.js';
 import { obterCarteiraAtiva } from '../src/executor/executor.js';
+// Só a constante: `executarCicloAtivo` continua vindo por import dinâmico nos
+// testes que o usam. (O módulo já está carregado — `orquestrador.js`, acima,
+// o importa estaticamente.)
+import { BASE_PATRIMONIO } from '../src/nucleo/cicloAtivo.js';
 import { abrirPosicao, lucroDaPosicao } from '../src/posicoes/posicoes.js';
 import {
   inicializarPersistencia,
@@ -25,6 +31,7 @@ import {
   salvarAtivo,
   obterEstadoAtivo,
   obterEstadoPlataforma,
+  salvarEstadoPlataforma,
   obterPosicoesAtivoPorModo,
   obterUltimaOperacaoExecutadaAtivo,
   obterHistoricoRecenteAtivo,
@@ -37,6 +44,8 @@ import {
   obterStatusBot,
   obterControle,
   salvarControle,
+  salvarPlataforma,
+  salvarEstadoAtivo,
 } from '../src/firebase/firebaseClient.js';
 
 // ------------------------------------------------------------ montadorPrompt
@@ -198,6 +207,58 @@ test('deveAnalisarAgora respeita o intervalo do ativo (com tolerância)', () => 
     }),
     false,
   );
+});
+
+test('ciclo que FALHOU recua em vez de ser retentado a cada tick (V8.13)', () => {
+  const config = { tempo_entre_analises_minutos: 60 }; // ritmo da Steam
+  const estadoSemCarimbo = (consecutivas, em) => ({ falha_ciclo: { em, consecutivas } });
+
+  // O caso do incidente: o ciclo quebra ANTES de gravar carimbo, então a régua
+  // normal ("nunca rodou → roda") o consideraria vencido em TODO tick de 1 min.
+  assert.equal(
+    deveAnalisarAgora({
+      config,
+      estado: estadoSemCarimbo(1, '2026-08-13T12:00:00Z'),
+      agora: new Date('2026-08-13T12:01:00Z'),
+    }),
+    false,
+    '1 minuto depois de falhar não se tenta de novo',
+  );
+  // Passado o intervalo do ativo, tenta.
+  assert.equal(
+    deveAnalisarAgora({
+      config,
+      estado: estadoSemCarimbo(1, '2026-08-13T12:00:00Z'),
+      agora: new Date('2026-08-13T13:00:00Z'),
+    }),
+    true,
+  );
+  // Falhas seguidas dobram a espera: com 3, são 4 h (60 min × 2²).
+  assert.equal(
+    deveAnalisarAgora({
+      config,
+      estado: estadoSemCarimbo(3, '2026-08-13T12:00:00Z'),
+      agora: new Date('2026-08-13T15:00:00Z'),
+    }),
+    false,
+  );
+  assert.equal(
+    deveAnalisarAgora({
+      config,
+      estado: estadoSemCarimbo(3, '2026-08-13T12:00:00Z'),
+      agora: new Date('2026-08-13T16:00:00Z'),
+    }),
+    true,
+  );
+});
+
+test('o recuo tem teto de 8× o intervalo (o ativo não some da operação)', () => {
+  const config = { tempo_entre_analises_minutos: 15 };
+  assert.equal(esperaAposFalhaMs(config, 1), 15 * 60_000);
+  assert.equal(esperaAposFalhaMs(config, 3), 60 * 60_000);
+  assert.equal(esperaAposFalhaMs(config, 4), 2 * 60 * 60_000);
+  assert.equal(esperaAposFalhaMs(config, 99), 8 * 15 * 60_000); // teto
+  assert.equal(esperaAposFalhaMs({}, 1), 15 * 60_000); // intervalo padrão
 });
 
 // -------------------------------------------- ciclo completo (ponta a ponta)
@@ -364,12 +425,15 @@ test('compra grava o stop-loss (e o motivo) na posição aberta', async () => {
   assert.equal(posicao.fechada_por, null);
 });
 
-test('stop-loss: preço abaixo do chão vende NO PREJUÍZO, sem chamar a IA', async () => {
+test('stop-loss: preço abaixo do chão vende NO PREJUÍZO — a venda é do Motor, e a IA só é ouvida depois', async () => {
   const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
   const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
 
-  // 2ª rodada: preço despenca abaixo do chão. A IA NÃO pode ser consultada.
-  let chamouIA = false;
+  // 2ª rodada: preço despenca abaixo do chão. Desde a V8.16 o ciclo NÃO termina
+  // na venda — ele segue e pergunta à IA se vale reentrar. O contrato que este
+  // teste guarda é que a IA nunca é perguntada se devia VENDER: quando ela é
+  // chamada, o lote já está fechado, e o cenário que ela recebe diz isso.
+  let cenarioIA = null;
   const r = await executarCicloAtivo({
     plataforma,
     api: { api_key_ia: 'chave-falsa' },
@@ -377,20 +441,30 @@ test('stop-loss: preço abaixo do chão vende NO PREJUÍZO, sem chamar a IA', as
     ativosDaPlataforma: [ativo],
     conector: conectorFalso({ preco: 94000, saldoMoeda: 800 }),
     estado,
-    decidirFn: async () => {
-      chamouIA = true;
-      throw new Error('a IA não deve ser consultada num disparo de stop-loss');
+    decidirFn: async (cenario) => {
+      cenarioIA = cenario;
+      return { acao: 'AGUARDAR', percentual: 0, justificativa: 'T.', valida: true };
     },
   });
 
-  assert.equal(chamouIA, false, 'o stop-loss é decisão do Motor, não da IA');
-  assert.equal(r.tipo, 'stop_loss');
-  assert.equal(r.operacao.status, 'executada');
-  assert.equal(r.operacao.tipo, 'VENDA');
+  const venda = r.saida_automatica;
+  assert.equal(venda.motivo, 'STOP_LOSS', 'o stop-loss é decisão do Motor, não da IA');
+  assert.equal(venda.operacao.status, 'executada');
+  assert.equal(venda.operacao.tipo, 'VENDA');
   // O marcador da dashboard e o filtro do banco saem daqui.
-  assert.equal(r.operacao.origem_decisao, 'motor_stop_loss');
-  assert.ok(r.operacao.lucro_liquido < 0, 'a venda por stop realiza prejuízo — é o objetivo');
-  assert.equal(r.operacao.stop_loss[0].motivo, 'abaixo do fundo recente');
+  assert.equal(venda.operacao.origem_decisao, 'motor_stop_loss');
+  assert.ok(venda.operacao.lucro_liquido < 0, 'a venda por stop realiza prejuízo — é o objetivo');
+  assert.equal(venda.operacao.stop_loss[0].motivo, 'abaixo do fundo recente');
+
+  // A IA foi chamada DEPOIS, para a reentrada — com o lote já fora da carteira.
+  assert.equal(r.tipo, 'analise');
+  assert.equal(cenarioIA.saida_automatica_recente.motivo, 'STOP_LOSS');
+  assert.equal(cenarioIA.saida_automatica_recente.saidas_automaticas_24h, 1);
+  assert.equal(
+    cenarioIA.carteira.posicoes_abertas.length,
+    0,
+    'quando a IA é chamada o lote JÁ foi vendido — ela não tem o que vender',
+  );
 
   // A posição fecha marcada como stop_loss (base da análise semanal).
   const [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
@@ -398,9 +472,43 @@ test('stop-loss: preço abaixo do chão vende NO PREJUÍZO, sem chamar a IA', as
   assert.equal(posicao.fechada_por, 'stop_loss');
   assert.equal(posicao.aberta_modo, null);
 
+  // O histórico guarda as DUAS entradas: a venda do Motor (sem IA) e a análise
+  // de reentrada que veio logo atrás.
   const historico = await obterHistoricoRecenteAtivo('MB', 'BTC', 5);
-  assert.equal(historico[0].tipo, 'stop_loss');
-  assert.equal(historico[0].chamou_ia, false);
+  const doStop = historico.find((h) => h.tipo === 'stop_loss');
+  assert.ok(doStop, 'a venda por stop tem entrada própria no histórico');
+  assert.equal(doStop.chamou_ia, false);
+  assert.ok(historico.some((h) => h.tipo === 'analise' && h.chamou_ia === true));
+});
+
+test('saída automática reescreve o snapshot da carteira — nada de posição fantasma na Visão Geral', async () => {
+  // A carteira do doc `dados/dashboard` é lida ANTES da ordem, quando a posição
+  // ainda está aberta. Se a venda por stop/trava não reler depois, a Visão
+  // Geral mostra saldo e lucro não realizado de um lote já vendido até a
+  // próxima análise da IA — que só vem quando o preço varia o mínimo, ou seja,
+  // pode demorar horas (produção, 2026-08-19: MB/BTC e BN/BTC).
+  const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
+  const { plataforma, ativo, estado } = await comprarComStop({ preco: 100000, stopLoss: 95000 });
+
+  const antes = await obterDashboardAtivo('MB', 'BTC');
+  assert.ok(antes.carteira_atual.saldo_ativo > 0, 'com a posição aberta o snapshot tem saldo');
+
+  const r = await executarCicloAtivo({
+    plataforma,
+    api: { api_key_ia: 'chave-falsa' },
+    ativo,
+    ativosDaPlataforma: [ativo],
+    conector: conectorFalso({ preco: 94000, saldoMoeda: 800 }),
+    estado,
+    decidirFn: async () => ({ acao: 'AGUARDAR', percentual: 0, justificativa: 'T.', valida: true }),
+  });
+  assert.equal(r.saida_automatica.motivo, 'STOP_LOSS');
+  assert.equal(r.saida_automatica.operacao.status, 'executada');
+
+  const depois = await obterDashboardAtivo('MB', 'BTC');
+  assert.equal(depois.carteira_atual.saldo_ativo, 0, 'o lote foi vendido: o snapshot não pode mais mostrá-lo');
+  assert.equal(depois.carteira_atual.lucro_nao_realizado, 0, 'sem posição aberta não existe lucro a realizar');
+  assert.equal(depois.carteira_atual.preco_medio_compra, null);
 });
 
 test('stop-loss é checado ANTES do filtro de variação (queda pequena ainda dispara)', async () => {
@@ -435,13 +543,11 @@ test('stop-loss é checado ANTES do filtro de variação (queda pequena ainda di
     ativo,
     ativosDaPlataforma: [ativo],
     conector: conectorFalso({ preco: 96999, saldoMoeda: 800 }), // variação de só 0,05%
-    decidirFn: async () => {
-      throw new Error('a IA não deve ser consultada');
-    },
+    decidirFn: aguardar,
   });
 
-  assert.equal(r.tipo, 'stop_loss');
-  assert.equal(r.operacao.status, 'executada');
+  assert.equal(r.saida_automatica.motivo, 'STOP_LOSS');
+  assert.equal(r.saida_automatica.operacao.status, 'executada');
 });
 
 // ------------------------------------------- kill-switch da IA (V8.10)
@@ -725,6 +831,88 @@ test('compra sem stop-loss válido é rejeitada e nenhuma posição é aberta', 
   assert.equal(r.avaliacao.status, 'rejeitada_regras');
   assert.match(r.avaliacao.motivo, /stop-loss/);
   assert.equal((await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao')).length, 0);
+});
+
+// ------------------------------- circuit breaker × movimentação externa (V8.12)
+
+/** Compra 20% do caixa com chão válido, devolvendo o resultado do ciclo. */
+async function cicloDeCompra(conector) {
+  const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
+  const ativo = await obterAtivo('MB', 'BTC');
+  return executarCicloAtivo({
+    plataforma: { id: 'MB', modelos_ia: ['falso'], timezone: 'America/Sao_Paulo' },
+    api: { api_key_ia: 'chave-falsa' },
+    ativo,
+    ativosDaPlataforma: [ativo],
+    conector,
+    decidirFn: async () => ({
+      acao: 'COMPRAR',
+      percentual: 20,
+      stop_loss: 95000,
+      stop_loss_motivo: 'abaixo do fundo recente',
+      justificativa: 'T.',
+      valida: true,
+    }),
+  });
+}
+
+test('circuit breaker: saque na conta real RE-ANCORA a referência do dia (não bloqueia a compra)', async () => {
+  const hoje = new Date().toISOString().slice(0, 10);
+  // Carteira virtual de 1.000 com a foto do real DEFASADA: a conta real está
+  // 400 menor (saque do dono), que este ciclo vai espelhar.
+  await salvarEstadoPlataforma('MB', {
+    carteira_virtual: { saldo_moeda: 1000, saldos: {}, inicializada_em: '2026-07-14T00:00:00Z' },
+    sincronizacao_saldos_reais: { saldo_moeda: 1000, saldos: {}, em: '2026-07-14T00:00:00Z' },
+    patrimonio_inicio_dia: { simulacao: { data: hoje, valor: 1000, base: BASE_PATRIMONIO } },
+  });
+
+  const r = await cicloDeCompra(conectorFalso({ preco: 100000, saldoMoeda: 600 }));
+
+  // −40% no patrimônio, mas foi saque, não perda: a compra segue.
+  assert.equal(r.avaliacao.status, 'aprovada');
+  assert.equal(r.operacao.status, 'executada');
+  const estadoPlat = await obterEstadoPlataforma('MB');
+  assert.equal(estadoPlat.patrimonio_inicio_dia.simulacao.valor, 600, 'referência do dia re-ancorada');
+});
+
+test('circuit breaker: queda de MERCADO (sem movimentação externa) continua bloqueando a compra', async () => {
+  const hoje = new Date().toISOString().slice(0, 10);
+  // Foto do real em dia (nenhum depósito/saque) e referência do dia bem acima
+  // do patrimônio atual: é queda de preço, exatamente o que o breaker existe
+  // para conter.
+  await salvarEstadoPlataforma('MB', {
+    carteira_virtual: { saldo_moeda: 1000, saldos: {}, inicializada_em: '2026-07-14T00:00:00Z' },
+    sincronizacao_saldos_reais: { saldo_moeda: 1000, saldos: {}, em: '2026-07-14T00:00:00Z' },
+    patrimonio_inicio_dia: { simulacao: { data: hoje, valor: 2000, base: BASE_PATRIMONIO } },
+  });
+
+  const r = await cicloDeCompra(conectorFalso({ preco: 100000, saldoMoeda: 1000 }));
+
+  assert.equal(r.avaliacao.status, 'rejeitada_regras');
+  assert.match(r.avaliacao.motivo, /circuit breaker/);
+  assert.equal((await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao')).length, 0);
+});
+
+test('circuit breaker: referência medida sob a base ANTIGA re-ancora em vez de bloquear', async () => {
+  const hoje = new Date().toISOString().slice(0, 10);
+  // Mesmíssimo cenário do teste acima — conta parada, referência 2x o
+  // patrimônio — só que a referência foi gravada antes da V8.14, sem carimbo
+  // de base. Ali era queda de mercado; aqui é mudança de régua: a V8.14 tirou
+  // os ativos do outro modo da conta, e o patrimônio "caiu" sem ninguém perder
+  // nada. Sem esta re-âncora, o dia do deploy travaria as compras da plataforma
+  // inteira até a data virar.
+  await salvarEstadoPlataforma('MB', {
+    carteira_virtual: { saldo_moeda: 1000, saldos: {}, inicializada_em: '2026-07-14T00:00:00Z' },
+    sincronizacao_saldos_reais: { saldo_moeda: 1000, saldos: {}, em: '2026-07-14T00:00:00Z' },
+    patrimonio_inicio_dia: { simulacao: { data: hoje, valor: 2000 } }, // sem `base`
+  });
+
+  const r = await cicloDeCompra(conectorFalso({ preco: 100000, saldoMoeda: 1000 }));
+
+  assert.equal(r.avaliacao.status, 'aprovada');
+  const estadoPlat = await obterEstadoPlataforma('MB');
+  assert.equal(estadoPlat.patrimonio_inicio_dia.simulacao.valor, 1000, 'referência re-ancorada');
+  assert.equal(estadoPlat.patrimonio_inicio_dia.simulacao.base, BASE_PATRIMONIO, 'e carimbada');
 });
 
 test('venda por posição fecha o lote com lucro e respeita "nunca vender no prejuízo"', async () => {
@@ -1105,6 +1293,28 @@ test('estado em memória: a marca do reset descarta a cópia, e nada mais descar
   assert.equal(deveLimparEstadoEmMemoria(null, undefined), false);
 });
 
+test('marcaMudou (V8.14): a régua de todo pedido que vem por carona no controle', async () => {
+  // O MESMO predicado agora serve à invalidação do estado, ao "atualizar
+  // inventário agora" e ao "a config mudou" — que existe porque o TTL do
+  // catálogo subiu para 15 min e ninguém deve esperar 15 min por uma edição.
+
+  // Primeiro tick: só anota. Sem isto, reiniciar o bot reexecutaria um pedido
+  // que o dono fez ontem e já esqueceu.
+  assert.equal(marcaMudou('2026-08-15T01:00:00Z', undefined), false);
+  assert.equal(marcaMudou(null, undefined), false);
+
+  // Marca nova = o dono salvou algo agora: age.
+  assert.equal(marcaMudou('2026-08-15T01:00:00Z', null), true);
+  assert.equal(marcaMudou('2026-08-15T02:00:00Z', '2026-08-15T01:00:00Z'), true);
+
+  // Marca igual = tick normal. Agir aqui derrubaria o catálogo a cada minuto,
+  // que é exatamente a leitura que a V8.14 foi feita para NÃO gastar.
+  assert.equal(marcaMudou('2026-08-15T01:00:00Z', '2026-08-15T01:00:00Z'), false);
+
+  // Campo ausente e null são o mesmo "sem pedido".
+  assert.equal(marcaMudou(undefined, null), false);
+});
+
 test('validade do contexto (V6.2): a IA a define UMA vez e o contexto não é mais perguntado', async () => {
   const { executarCicloAtivo } = await import('../src/nucleo/cicloAtivo.js');
   const conector = conectorFalso({ preco: 100000, saldoMoeda: 1000 });
@@ -1147,6 +1357,114 @@ test('validade do contexto (V6.2): a IA a define UMA vez e o contexto não é ma
   });
   assert.doesNotMatch(prompt2, /validade_contexto_dias/); // não pede mais
   assert.match(prompt2, /Notícia relevante de curto prazo/); // mas ainda envia o contexto
+});
+
+// ------------------------- camada de reentrada após a venda do Motor (V8.16)
+
+test('reentrada: a camada da saída automática entra no prompt e muda com o motivo', () => {
+  const base = { manifest: MANIFEST, regrasGerais: { conteudo: '# Regras' } };
+
+  const semSaida = montarPromptSistema(base).texto;
+  assert.doesNotMatch(semSaida, /acabou de fechar uma posição/, 'ciclo normal não ganha camada nenhuma');
+
+  const porTrava = montarPromptSistema({
+    ...base,
+    saidaAutomatica: {
+      motivo: 'TRAVA_DE_LUCRO', preco_da_venda: 105000, resultado_liquido: 42.5,
+      quantidade_vendida: 0.002, saidas_automaticas_24h: 1,
+    },
+  }).texto;
+  assert.match(porTrava, /TRAVA DE LUCRO/);
+  assert.match(porTrava, /vale a pena voltar a este ativo agora/);
+  // Saída no lucro: COMPRAR é resposta legítima, com o custo da ida e volta pesado.
+  assert.match(porTrava, /COMPRAR é uma/);
+  assert.match(porTrava, /resposta legítima aqui/);
+
+  const porStop = montarPromptSistema({
+    ...base,
+    saidaAutomatica: {
+      motivo: 'STOP_LOSS', preco_da_venda: 94000, resultado_liquido: -31.2,
+      quantidade_vendida: 0.002, saidas_automaticas_24h: 1,
+    },
+  }).texto;
+  // Saída de defesa: o padrão é AGUARDAR — a tese que abriu o lote falhou.
+  assert.match(porStop, /O padrão aqui é/);
+  assert.match(porStop, /sinal NOVO de reversão/);
+  assert.doesNotMatch(porStop, /resposta legítima/);
+
+  // Duas saídas no mesmo dia: mercado serrando a posição, e o texto diz isso.
+  const serrando = montarPromptSistema({
+    ...base,
+    saidaAutomatica: {
+      motivo: 'TRAVA_DE_LUCRO', preco_da_venda: 105000, resultado_liquido: 3,
+      quantidade_vendida: 0.002, saidas_automaticas_24h: 3,
+    },
+  }).texto;
+  assert.match(serrando, /3 saídas automáticas nas últimas 24 h/);
+
+  // O contrato de saída continua sendo a ÚLTIMA palavra do prompt.
+  assert.ok(porStop.trimEnd().endsWith('use apenas os campos acima.'));
+});
+
+// ------------------------------- pausar as análises de uma plataforma (V8.16)
+
+test('plataforma com análises PAUSADAS não roda ativo nenhum', async () => {
+  // Sem rede em teste: se a pausa falhar, o ciclo do BTC começa e morre na
+  // primeira chamada — e é justamente esse 'erro' que o contraste abaixo usa
+  // como prova de que a pausa foi quem segurou, e não outra coisa.
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('sem rede no teste'); };
+  try {
+    await salvarPlataforma('MB', { analises_pausadas: true });
+    invalidarCatalogo();
+    assert.deepEqual(await executarRodada({ decidirFn: async () => ({}) }), []);
+
+    await salvarPlataforma('MB', { analises_pausadas: false });
+    invalidarCatalogo();
+    limparEstadoAtivosEmMemoria();
+    assert.deepEqual(
+      await executarRodada({ decidirFn: async () => ({}) }),
+      [{ plataforma: 'MB', ativo: 'BTC', tipo: 'erro' }],
+      'sem a pausa, o mesmo cenário CHEGA ao ciclo do ativo',
+    );
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+// ------------------------------------------- "analisar agora" por ativo (V8.16)
+
+test('"analisar agora": a marca do dono fura o intervalo — e vale UMA vez só', async () => {
+  // Carimbo fresco: pela régua do intervalo o BTC não roda em nenhum dos ticks.
+  const agoraISO = new Date().toISOString();
+  await salvarEstadoAtivo('MB', 'BTC', {
+    horario_ultima_analise: agoraISO,
+    horario_ultima_verificacao: agoraISO,
+  });
+  limparEstadoAtivosEmMemoria();
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('sem rede no teste'); };
+  try {
+    // 1) sem pedido: o intervalo segura a rodada.
+    assert.deepEqual(await executarRodada({ decidirFn: async () => ({}) }), []);
+
+    // 2) o dono clica: marca NOVA fura o intervalo e o ciclo começa (e morre
+    //    sem rede, que é o sinal de que ele começou).
+    await salvarAtivo('MB', 'BTC', { analise_solicitada_em: '2026-08-20T12:00:00.000Z' });
+    invalidarCatalogo(); // o que a dashboard provoca ao gravar (V8.14)
+    assert.deepEqual(
+      await executarRodada({ decidirFn: async () => ({}) }),
+      [{ plataforma: 'MB', ativo: 'BTC', tipo: 'erro' }],
+    );
+
+    // 3) a MESMA marca no tick seguinte não repete o pedido — senão um clique
+    //    viraria uma análise por minuto para sempre.
+    invalidarCatalogo();
+    assert.deepEqual(await executarRodada({ decidirFn: async () => ({}) }), []);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
 });
 
 test('executarRodada respeita BOT_PLATAFORMAS (escopo por instância)', async () => {

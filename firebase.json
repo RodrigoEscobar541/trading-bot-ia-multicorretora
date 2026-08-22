@@ -16,6 +16,16 @@
             "value": "no-cache"
           }
         ]
+      },
+      {
+        "//": "A RAIZ, separada — e é o conserto que faltou em 2026-08-05. O glob acima casa o CAMINHO da requisição, não o arquivo servido: /index.html vinha com no-cache, mas / (a URL que o dono digita) caía no padrão do Hosting, max-age=3600. Resultado: o mesmo estrago que o comentário de cima descreve, entrando pela porta da frente — em 21/08 a seção de contas espelho subiu, o app.js novo chegou na hora e o dono passou a ver uma página que não tinha a seção. CONFERIR SEMPRE NA RAIZ: curl -sI https://SEU-PROJETO.web.app/ | grep -i cache (tem de dizer no-cache). Testar /index.html dá no-cache e ESCONDE o problema.",
+        "source": "/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
       }
     ]
   },

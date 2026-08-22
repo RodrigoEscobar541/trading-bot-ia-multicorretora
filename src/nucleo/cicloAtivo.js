@@ -27,6 +27,7 @@ import {
   STATUS_VENDAVEIS,
 } from '../posicoes/posicoes.js';
 import {
+  BASE_PATRIMONIO,
   obterCarteiraAtiva,
   prepararContextoExecucao,
   calcularPatrimonioPlataforma,
@@ -60,6 +61,7 @@ import {
   salvarValidadeContexto,
 } from '../firebase/firebaseClient.js';
 import { camadasPromptCache, invalidarCatalogo } from './catalogo.js';
+import { espelharContasSecundarias, saidasAutomaticasDasContas } from './contasEspelho.js';
 import { processarOperacoesManuais } from './operacoesManuais.js';
 import { timestampISO, formatarDinheiro } from '../utils/formatador.js';
 import { log } from '../utils/logger.js';
@@ -70,6 +72,15 @@ const rQtd = (v) => Math.round(v * 1e8) / 1e8;
 
 /** Data ISO de `dias` atrás. */
 const diasAtras = (dias) => new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
+
+// Carimbo da regra que mediu o patrimônio da plataforma — definido no executor,
+// junto de `calcularPatrimonioPlataforma`, porque é aquela função que estabelece
+// a regra. Trocar o valor obriga o circuit breaker a re-ancorar a referência do
+// dia no próximo ciclo — é o que impede uma mudança de base de ser lida como
+// perda (ver §circuit breaker, abaixo). Re-exportado para os testes montarem
+// referência "da regra atual" sem repetir a string: fixture com carimbo velho
+// re-ancora e deixa de exercitar o breaker.
+export { BASE_PATRIMONIO };
 
 /**
  * Executa um ciclo completo para um ativo. Retorna:
@@ -134,7 +145,8 @@ export async function executarCicloAtivo({
 
   const ticker = await conector.precoAtual(par);
   const precoAtual = ticker.ultimo;
-  const estado = estadoConhecido ?? (await obterEstadoAtivo(pid, aid));
+  // `let` porque a venda automática abaixo devolve um estado mais novo (V8.16).
+  let estado = estadoConhecido ?? (await obterEstadoAtivo(pid, aid));
   const agora = timestampISO();
 
   // ---------------------------------------------- SAÍDAS AUTOMÁTICAS (V6.6/V8.11)
@@ -144,7 +156,7 @@ export async function executarCicloAtivo({
   // chamada não seria chão nenhum — uma queda pode acontecer sem que a variação
   // acumulada desde a última ANÁLISE passe do mínimo. São determinísticos e não
   // consultam a IA.
-  const stop = await verificarSaidasAutomaticas({
+  const saidaAutomatica = await verificarSaidasAutomaticas({
     pid,
     aid,
     ativo,
@@ -156,7 +168,45 @@ export async function executarCicloAtivo({
     estado,
     moeda,
   });
-  if (stop) return stop;
+
+  // ---------------------------------- REENTRADA APÓS A SAÍDA DO MOTOR (V8.16)
+  // Até a V8.15 a saída automática ENCERRAVA o ciclo, e a próxima análise só
+  // vinha quando o intervalo vencesse E o preço tivesse andado o mínimo desde a
+  // última análise DE VERDADE. Os números de produção mostraram o custo disso:
+  // nas 22 vendas pela trava de lucro, o preço estava MAIS ALTO 6 h depois em
+  // 17 delas (+1,8% em média; +3,3% em 24 h), e o robô levou de 8 h a 195 h
+  // para voltar ao ativo em vários casos — não porque decidiu ficar de fora,
+  // mas porque ninguém foi perguntado.
+  //
+  // Agora o ciclo SEGUE: a mesma rodada que vendeu chama a IA, com o fato da
+  // venda no cenário e uma camada de prompt própria (montadorPrompt), e a
+  // pergunta da vez passa a ser "vale reentrar?" em vez de "vale vender?".
+  //
+  // Só quando a venda foi EXECUTADA. Em plataforma assistida ela vira
+  // RECOMENDAÇÃO e o lote continua aberto — ali não há reentrada a decidir, e
+  // seguir só empilharia uma segunda recomendação sobre a primeira.
+  // Com a IA desligada (kill-switch) o ciclo também termina aqui: quem
+  // protege continua trabalhando, quem decide está desligado.
+  const vendaDoMotor = saidaAutomatica?.operacao?.status === 'executada' ? saidaAutomatica : null;
+  if (saidaAutomatica && (!vendaDoMotor || iaDesligada)) return saidaAutomatica;
+  if (vendaDoMotor) {
+    // O estado devolvido pelo Motor já traz `ultima_operacao_executada` e o
+    // carimbo de verificação: seguir com a cópia velha faria o resto do ciclo
+    // (e o mapa em memória do orquestrador) esquecer a venda que acabou de sair.
+    estado = vendaDoMotor.estado ?? estado;
+    forcarAnalise = true; // o filtro de variação engoliria justamente esta análise
+  }
+
+  // CONTAS ESPELHO — saídas automáticas (V8.18, fase 4). Rodam a cada ciclo,
+  // logo depois das da conta principal e pelo mesmo motivo: chão que só é
+  // conferido de vez em quando não é chão. São os lotes DELA, com o chão DELA, e
+  // nenhuma chamada de IA. Melhor esforço — o módulo nunca lança, e este
+  // `catch` é o segundo cinto.
+  try {
+    await saidasAutomaticasDasContas({ plataforma, ativo, precoAtual });
+  } catch (e) {
+    log.aviso(`[${pid}/${aid}] saídas automáticas das contas espelho falharam — sem efeito na principal`, e);
+  }
 
   // ------------------------------------------------ IA DESLIGADA (kill-switch)
   // Chave da IA desligada pela dashboard (`global/controle.ia_desligada`). Vem
@@ -332,6 +382,25 @@ export async function executarCicloAtivo({
     await salvarEstadoAtivo(pid, aid, { ultima_operacao_executada: ultimaOp });
   }
 
+  // Fato da venda do Motor nesta MESMA rodada (V8.16) — vai ao cenário e à
+  // camada de prompt. `null` quando o ciclo é normal: fora da reentrada, o
+  // JSON enviado à IA é idêntico ao de antes.
+  const saidaRecente = vendaDoMotor
+    ? {
+        motivo: vendaDoMotor.tipo === 'trava_lucro' ? 'TRAVA_DE_LUCRO' : 'STOP_LOSS',
+        horario: vendaDoMotor.operacao.horario,
+        preco_da_venda: r2(vendaDoMotor.operacao.preco),
+        quantidade_vendida: rQtd(vendaDoMotor.operacao.quantidade),
+        resultado_liquido: r2(vendaDoMotor.operacao.lucro_liquido),
+        // Quantas vezes o Motor já teve de sair deste ativo nas últimas 24 h.
+        // Duas ou mais é o retrato de um mercado serrando a posição, e o preço
+        // desta análise não é a informação que falta — é essa.
+        saidas_automaticas_24h: opsJanela.filter(
+          (op) => op.horario >= diasAtras(1) && String(op.origem_decisao ?? '').startsWith('motor_'),
+        ).length,
+      }
+    : null;
+
   // ------------------------------------------------------- JSON da análise (§6.1)
   const cenario = {
     timestamp: agora,
@@ -383,6 +452,14 @@ export async function executarCicloAtivo({
     },
   };
 
+  // Saída automática ACABOU de acontecer neste ciclo (V8.16): o Motor vendeu e
+  // a análise abaixo existe por causa disso. O contador de 24 h sai da MESMA
+  // query já feita acima (nenhuma leitura nova) e é o número que distingue
+  // "uma saída" de "este ativo está serrando o robô hoje".
+  if (saidaRecente) {
+    cenario.saida_automatica_recente = saidaRecente;
+  }
+
   // Liquidação em curso (V8): o dia da janela e o prejuízo aceito HOJE. É o
   // campo que faz a IA saber se ainda tem tempo de esperar um ponto melhor ou
   // se a tolerância já abriu. Só entra no JSON quando o modo está ligado —
@@ -413,13 +490,16 @@ export async function executarCicloAtivo({
     noticias, // atualizações do jogo, nas plataformas que as têm
     contexto,
     modoVendas,
+    saidaAutomatica: saidaRecente, // reentrada após a venda do Motor (V8.16)
     agora: new Date(agora),
   });
 
-  log.info(`[${pid}/${aid}] variação suficiente — chamando a IA`, {
-    variacao: r2(variacao ?? 0),
-    resetar,
-  });
+  log.info(
+    saidaRecente
+      ? `[${pid}/${aid}] reentrada após ${saidaRecente.motivo} — chamando a IA`
+      : `[${pid}/${aid}] variação suficiente — chamando a IA`,
+    { variacao: r2(variacao ?? 0), resetar },
+  );
   const decisao = await decidirFn(cenario, {
     apiKey: api.api_key_ia,
     modelos: plataforma.modelos_ia,
@@ -497,12 +577,16 @@ export async function executarCicloAtivo({
   // Reconsulta tudo o que o Motor exige no instante da execução (§8).
   const { preco_execucao, ordens_abertas } = await prepararContextoExecucao({ ativo, conector });
 
-  // Patrimônio da plataforma no modo (orçamento por ativo + circuit breaker).
+  // Patrimônio da plataforma NO MODO (orçamento por ativo + circuit breaker).
+  // `modo` não é decoração: ele filtra os ativos que entram na conta, para que
+  // os orçamentos dos simulados e dos reais dividam 100% cada um, em separado
+  // (V8.14 — ver `calcularPatrimonioPlataforma`).
   const { patrimonio, valor_por_ativo } = await calcularPatrimonioPlataforma({
     conector,
     saldoMoeda: carteira.saldo_moeda,
     saldos: carteira.saldos,
     ativos: ativosDaPlataforma,
+    modo,
     precosConhecidos: { [aid]: preco_execucao },
   });
 
@@ -510,10 +594,25 @@ export async function executarCicloAtivo({
   // análise do dia (UTC), por modo — simulação e real têm patrimônios
   // distintos. Reusa o estadoPlat lido no início do ciclo (ninguém escreve
   // patrimonio_inicio_dia entre lá e aqui).
+  //
+  // DEPÓSITO/SAQUE RE-ANCORA A REFERÊNCIA: o breaker mede PERDA, e dinheiro que
+  // entrou ou saiu da conta não é perda nenhuma. Sem isto um saque vira
+  // "patrimônio caiu 20% hoje" e bloqueia as compras da plataforma inteira até
+  // o dia virar — aconteceu em 09 e 12/08/2026, com 3 compras rejeitadas. O
+  // preço da re-âncora é esquecer a queda que já havia acontecido no dia; é o
+  // lado certo de errar, porque o outro bloqueia a operação por engano.
+  //
+  // MUDAR A BASE DO PATRIMÔNIO TAMBÉM RE-ANCORA: a V8.14 tirou os ativos do
+  // outro modo da conta, então o patrimônio do modo DIMINUIU de um ciclo para o
+  // outro sem ninguém ter perdido nada. Uma referência gravada sob a base antiga
+  // viraria uma queda falsa de dezenas de por cento e travaria as compras da
+  // plataforma até o dia virar — exatamente o estrago que a re-âncora do
+  // depósito/saque existe para evitar. `base` carimba sob qual regra o valor foi
+  // medido; referência sem o carimbo é de antes da V8.14.
   const hoje = agora.slice(0, 10);
-  let inicioDia = estadoPlat.patrimonio_inicio_dia?.[modo];
-  if (!inicioDia || inicioDia.data !== hoje) {
-    inicioDia = { data: hoje, valor: r2(patrimonio) };
+  let inicioDia = carteira.movimentacao_externa ? null : estadoPlat.patrimonio_inicio_dia?.[modo];
+  if (!inicioDia || inicioDia.data !== hoje || inicioDia.base !== BASE_PATRIMONIO) {
+    inicioDia = { data: hoje, valor: r2(patrimonio), base: BASE_PATRIMONIO };
     await salvarEstadoPlataforma(pid, { patrimonio_inicio_dia: { [modo]: inicioDia } });
   }
 
@@ -533,6 +632,10 @@ export async function executarCicloAtivo({
     // Liquidação (V8): sem este objeto o Motor não tem nenhum caminho que
     // aprove venda no prejuízo — é o que mantém a regra 4 intacta fora do modo.
     modo_vendas: modoVendas,
+    // ALERTA DE OPORTUNIDADE (V8.22, §10.12): em plataforma ASSISTIDA a
+    // aprovação vira recado, não ordem — então as regras do CAIXA saem do
+    // caminho. Amarrado ao `assistida`, nunca a um nome de plataforma.
+    recomendacao: assistida,
   });
 
   if (avaliacao.status === 'erro') {
@@ -555,6 +658,25 @@ export async function executarCicloAtivo({
       // orquestrador (mapa em memória) ficar coerente com o Firestore.
       ultimaOp = { id: operacao.id, tipo: operacao.tipo, horario: operacao.horario };
       await salvarEstadoAtivo(pid, aid, { ultima_operacao_executada: ultimaOp });
+    }
+  }
+
+  // CONTAS ESPELHO (V8.18): a operação da principal JÁ está persistida. Daqui
+  // para baixo é acessório — o contrato do módulo é nunca lançar, e o `catch`
+  // aqui é o segundo cinto: espelho com defeito não pode desfazer nem sujar o
+  // ciclo da conta que opera de verdade.
+  if (operacao?.status === 'executada') {
+    try {
+      await espelharContasSecundarias({
+        plataforma,
+        ativo,
+        decisao,
+        avaliacao,
+        operacao,
+        saldosPrincipal: { moeda, saldo_moeda: carteira.saldo_moeda, saldos: carteira.saldos ?? {} },
+      });
+    } catch (e) {
+      log.aviso(`[${pid}/${aid}] espelho das contas secundárias falhou — sem efeito na principal`, e);
     }
   }
 
@@ -636,6 +758,13 @@ export async function executarCicloAtivo({
 
   return {
     tipo: 'analise',
+    // A venda do Motor que abriu esta rodada, quando houve (V8.16). Vai
+    // INTEIRA — o `tipo` deste retorno virou 'analise' e, sem isto, quem chama
+    // (orquestrador, testes) perderia a operação que fechou a posição no mesmo
+    // minuto. `null` no ciclo normal.
+    saida_automatica: vendaDoMotor
+      ? { motivo: saidaRecente.motivo, operacao: vendaDoMotor.operacao, avaliacao: vendaDoMotor.avaliacao }
+      : null,
     cenario,
     decisao,
     avaliacao,
@@ -885,6 +1014,24 @@ async function verificarSaidasAutomaticas({ pid, aid, ativo, conector, precoAtua
     );
     ultimaOp = { id: operacao.id, tipo: operacao.tipo, horario: operacao.horario };
     await salvarEstadoAtivo(pid, aid, { ultima_operacao_executada: ultimaOp });
+
+    // Snapshot de apresentação PÓS-VENDA. O `obterCarteiraAtiva` acima rodou
+    // ANTES da ordem e gravou no doc `dados/dashboard` a carteira com a posição
+    // ainda aberta. A saída automática não é uma análise, então nada mais nesta
+    // rodada reescreve esse doc — e os ciclos seguintes também não, porque
+    // param no filtro de variação. Sem esta releitura a Visão Geral segue
+    // mostrando uma posição FANTASMA (saldo do ativo e lucro não realizado de
+    // um lote já vendido) até a próxima análise DE VERDADE, o que pode demorar
+    // horas: em 2026-08-19 aconteceu nos dois BTC, MB e BN, depois de vendas
+    // pela trava de lucro. O caminho da IA já relê depois de executar; aqui
+    // faltava. Sem `estadoPlataforma`: snapshot pós-execução tem de reler o
+    // estado da plataforma, nunca reaproveitar o de antes da ordem (executor.js).
+    // Melhor esforço: é doc de apresentação, e a venda já está persistida.
+    try {
+      await obterCarteiraAtiva({ plataformaId: pid, ativo, conector, precoAtual: preco_execucao });
+    } catch (e) {
+      log.aviso(`[${pid}/${aid}] falha ao atualizar o snapshot da carteira após a saída automática`, e);
+    }
   }
 
   // A saída automática NÃO mexe no baseline do filtro de variação: ela não é

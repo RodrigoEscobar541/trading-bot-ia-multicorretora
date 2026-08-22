@@ -124,6 +124,68 @@ const CONTRATO_SAIDA = [
 ].join('\n');
 
 /**
+ * A camada de REENTRADA (V8.16): o Motor vendeu agora, nesta mesma rodada, e a
+ * análise que vem a seguir existe por causa disso.
+ *
+ * Os dois motivos pedem leituras opostas, e é isso que o texto separa:
+ *
+ * - TRAVA DE LUCRO — a saída foi boa e a tese pode continuar de pé. Nos números
+ *   de produção o preço seguiu SUBINDO depois da maioria dessas vendas, então
+ *   ficar de fora por inércia custou dinheiro. Reentrar é uma opção legítima.
+ * - STOP-LOSS — o chão foi furado, ou seja, a tese que abriu o lote foi
+ *   INVALIDADA pelo preço. Recomprar na sequência é como se transforma um
+ *   prejuízo pequeno em vários; aqui o padrão é AGUARDAR, e reentrar exige
+ *   sinal novo, não a mesma tese de antes.
+ *
+ * O contador de 24 h é a terceira trava: mercado que serra a posição stopa de
+ * novo, e duas saídas no mesmo dia dizem mais sobre o momento do que qualquer
+ * indicador da rodada.
+ */
+function blocoSaidaAutomatica(saida) {
+  const porTrava = saida.motivo === 'TRAVA_DE_LUCRO';
+  const linhas = [
+    '# O sistema acabou de fechar uma posição neste ativo',
+    '',
+    `- motivo: ${porTrava ? 'TRAVA DE LUCRO (o lote subiu e devolveu parte do topo — venda com ganho)' : 'STOP-LOSS (o preço furou o chão da posição — venda de defesa)'}`,
+    `- preço da venda: ${saida.preco_da_venda}`,
+    `- resultado do lote: ${saida.resultado_liquido}`,
+    `- saídas automáticas deste ativo nas últimas 24 h: ${saida.saidas_automaticas_24h}`,
+    '',
+    'A venda JÁ ACONTECEU e não pode ser desfeita — ela não é a sua decisão. Esta',
+    'análise está sendo feita agora justamente por causa dela, e a sua pergunta é',
+    'outra: **vale a pena voltar a este ativo agora?**',
+    '',
+  ];
+  if (porTrava) {
+    linhas.push(
+      'A saída foi por LUCRO, então a tese que abriu o lote pode continuar de pé —',
+      'quem vendeu foi uma regra mecânica de realização, não uma leitura de que o',
+      'movimento acabou. Se os indicadores ainda sustentam a alta, COMPRAR é uma',
+      'resposta legítima aqui. Pese o custo de ida e volta: recomprar acima do preço',
+      'da venda mais as duas taxas devolve parte do ganho que acabou de ser',
+      'realizado, e só se justifica se o movimento à frente for maior que isso.',
+    );
+  } else {
+    linhas.push(
+      'A saída foi de DEFESA: o preço furou o chão, o que significa que a tese que',
+      'abriu aquele lote foi invalidada pelo próprio mercado. O padrão aqui é',
+      'AGUARDAR. Só considere COMPRAR se houver sinal NOVO de reversão nos',
+      'indicadores desta rodada — repetir a tese que acabou de falhar é como um',
+      'prejuízo pequeno vira uma sequência deles.',
+    );
+  }
+  if (saida.saidas_automaticas_24h >= 2) {
+    linhas.push(
+      '',
+      `ATENÇÃO: este ativo já teve ${saida.saidas_automaticas_24h} saídas automáticas nas últimas 24 h. Isso é o`,
+      'retrato de um preço serrando de um lado para o outro, e o custo dessas idas e',
+      'voltas se acumula. Nesta condição, AGUARDAR é quase sempre a decisão certa.',
+    );
+  }
+  return linhas.join('\n');
+}
+
+/**
  * Monta o prompt de sistema.
  *
  * Validade do contexto (V6.2): a IA define UMA vez, na primeira análise após o
@@ -139,10 +201,12 @@ const CONTRATO_SAIDA = [
  *   promptAtivo  — doc do prompt do ativo ({ conteudo }) ou null
  *   supervisao   — doc da camada de supervisão ({ conteudo, versao }) ou null (V7.2)
  *   contexto     — doc do contexto ({ texto, atualizado_em, validade_ate }) ou null
+ *   saidaAutomatica — a venda que o MOTOR acabou de executar nesta rodada
+ *                  ({ motivo, preco_da_venda, resultado_liquido, ... }) ou null (V8.16)
  *   agora        — Date de referência para a validade (padrão: agora)
  * @returns {{ texto: string, partes: string[], pedeValidadeContexto: boolean }}
  */
-export function montarPromptSistema({ manifest, plataforma = null, regrasGerais = null, regrasGeraisVenda = null, template = null, promptAtivo = null, supervisao = null, noticias = null, contexto = null, modoVendas = null, agora = new Date() }) {
+export function montarPromptSistema({ manifest, plataforma = null, regrasGerais = null, regrasGeraisVenda = null, template = null, promptAtivo = null, supervisao = null, noticias = null, contexto = null, modoVendas = null, saidaAutomatica = null, agora = new Date() }) {
   const partes = [];
   const liquidando = modoVendas?.ativo === true;
   // Plataforma cujo mercado é de outra natureza (`usaRegrasGerais: false` —
@@ -288,6 +352,18 @@ export function montarPromptSistema({ manifest, plataforma = null, regrasGerais 
         'ele deixa de ser enviado. O prazo é definido só desta vez e não será mais perguntado.';
     }
     partes.push(bloco);
+  }
+
+  // REENTRADA APÓS A VENDA DO MOTOR (V8.16). Última camada de conteúdo, logo
+  // antes do contrato de formato, porque é o fato mais recente do ciclo e o
+  // motivo de esta análise existir: o lote foi fechado há segundos e a pergunta
+  // mudou de "vender?" para "voltar?".
+  //
+  // O texto é do CÓDIGO, não editável pela dashboard, pelo mesmo motivo do
+  // bloco da liquidação: o número que ele carrega é medido pelo bot, e um
+  // template reescrito não pode fazer a IA achar que ainda tem posição aberta.
+  if (saidaAutomatica) {
+    partes.push(blocoSaidaAutomatica(saidaAutomatica));
   }
 
   // Contrato de saída SEMPRE por último: é a palavra final sobre o FORMATO,

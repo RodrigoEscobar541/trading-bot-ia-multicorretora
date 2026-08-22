@@ -20,9 +20,20 @@
 //     domingos e feriados (calendário bancário brasileiro, com os móveis via
 //     Páscoa) não somam nada. As taxas de referência ano/mês/semana continuam
 //     conversões teóricas da taxa a.a. (não é cálculo de rentabilidade fiscal).
-//   - O rendimento do robô em % usa como principal o patrimônio REAL da
-//     plataforma na largada (`patrimonio_inicio_dia.real`, melhor esforço).
+//   - O rendimento do robô em % usa como principal o patrimônio do MODO na
+//     largada (`patrimonio_inicio_dia[modo]`, melhor esforço). Esse número é
+//     medido só com os ativos DAQUELE modo (V8.14): no modo real ele NÃO inclui
+//     as posições dos ativos que rodam em simulação, nem a carteira virtual.
+//     Referência medida sob a regra ANTIGA (sem o carimbo `base`, quando o
+//     patrimônio somava os dois modos) é RECUSADA e o principal é re-medido —
+//     senão o comparativo ficaria dividindo o lucro real por um principal
+//     inflado com dinheiro virtual (era o caso até a V8.15).
 //     Aportes/saques posteriores distorcem o comparativo (limitação aceita).
+//   - O principal soma as MESMAS carteiras que o numerador: toda plataforma com
+//     ativo no modo, convertida para BRL pelo câmbio do BCB. Moeda sem cotação
+//     fica de fora dos DOIS lados. Plataforma do modo que não entrou (sem
+//     referência ainda, carimbo velho ou moeda sem câmbio) é reportada em
+//     `patrimonio_inicial_fora` — o principal é parcial e a dashboard diz isso.
 //   - O comparativo é na moeda da Selic (BRL). O lucro de cada moeda continua
 //     registrado NA SUA MOEDA em `lucro_real_por_moeda` (o cabeçalho da
 //     dashboard mostra "R$ … · US$ …"), mas o TOTAL comparado com o CDI soma
@@ -40,6 +51,7 @@ import {
   salvarCambio,
   obterConfigRenda,
 } from '../firebase/firebaseClient.js';
+import { BASE_PATRIMONIO } from '../executor/executor.js';
 import { plataformasCache, ativosCache } from './catalogo.js';
 import { log } from '../utils/logger.js';
 
@@ -280,13 +292,14 @@ export async function atualizarCambio({ agora = new Date(), fetchFn = fetch } = 
 
 /**
  * Soma o lucro realizado POR MOEDA no MODO dado ('real' | 'simulacao'),
- * considerando só os ativos daquele modo. Devolve também as plataformas em BRL
- * com ativos no modo (base do principal do comparativo).
+ * considerando só os ativos daquele modo. Devolve também as plataformas que TÊM
+ * ativo no modo, com a moeda de cada uma — é dessa lista que sai o principal do
+ * comparativo, para que denominador e numerador cubram as MESMAS carteiras.
  */
 async function agregarModo(plataformas, modo, agoraMs) {
   const ehReal = modo === 'real';
   const porMoeda = {};
-  const plataformasBRL = [];
+  const plataformasDoModo = [];
   let existe = false;
   for (const plataforma of plataformas) {
     const moeda = plataforma.moeda ?? 'BRL';
@@ -294,13 +307,13 @@ async function agregarModo(plataformas, modo, agoraMs) {
     const doModo = ativos.filter((a) => (a.config.modo_simulacao === false) === ehReal);
     if (doModo.length === 0) continue;
     existe = true;
-    if (moeda === 'BRL') plataformasBRL.push(plataforma.id);
+    plataformasDoModo.push({ id: plataforma.id, moeda });
     for (const ativo of doModo) {
       const stats = await obterEstatisticasAtivo(plataforma.id, ativo.id, modo);
       porMoeda[moeda] = (porMoeda[moeda] ?? 0) + (stats.lucro_total ?? 0);
     }
   }
-  return { existe, porMoeda, plataformasBRL };
+  return { existe, porMoeda, plataformasDoModo };
 }
 
 /**
@@ -330,13 +343,58 @@ export function converterLucroParaBRL(lucroPorMoeda, cambio) {
 }
 
 /**
+ * Mede o PRINCIPAL do comparativo (em BRL): a soma do patrimônio de largada das
+ * plataformas que têm ativo no modo. Cada parcela vem de
+ * `patrimonio_inicio_dia[modo]`, a referência diária do circuit breaker — que
+ * desde a V8.14 é medida SÓ com os ativos daquele modo (carimbo `base`).
+ *
+ * O que fica de FORA, e por quê:
+ *   - referência sem o carimbo da regra atual: foi medida quando o patrimônio
+ *     somava os dois modos, então carrega posição de ativo simulado. Entrar com
+ *     ela é pior que ficar sem: infla o principal e some com o % do robô.
+ *   - plataforma sem referência ainda (nunca rodou um ciclo no modo — é o caso
+ *     das assistidas paradas): nada a somar.
+ *   - moeda estrangeira sem cotação no doc `global/cambio`: mesma régua do
+ *     lucro (§ decisões, topo do arquivo) — nunca se chuta um câmbio.
+ *
+ * Devolve { valor, plataformas, fora, medido_em }: `valor` é null quando
+ * nenhuma parcela pôde ser medida (tentamos de novo no próximo recálculo);
+ * `fora` lista as plataformas do modo que não entraram, para a dashboard poder
+ * dizer que o principal é parcial.
+ */
+async function medirPrincipal({ plataformasDoModo, modo, cambio }) {
+  let soma = 0;
+  let achou = false;
+  const plataformas = [];
+  const fora = [];
+  let medidoEm = null;
+  for (const { id, moeda } of plataformasDoModo) {
+    const ref = (await obterEstadoPlataforma(id)).patrimonio_inicio_dia?.[modo];
+    if (!Number.isFinite(ref?.valor) || ref.base !== BASE_PATRIMONIO) {
+      fora.push(id);
+      continue;
+    }
+    const taxa = moeda === 'BRL' ? 1 : cambio?.[moeda]?.para_brl;
+    if (!Number.isFinite(taxa) || taxa <= 0) {
+      fora.push(id);
+      continue;
+    }
+    soma += ref.valor * taxa;
+    achou = true;
+    plataformas.push(id);
+    if (ref.data && (medidoEm === null || ref.data > medidoEm)) medidoEm = ref.data;
+  }
+  return { valor: achou ? r2(soma) : null, plataformas, fora, medido_em: medidoEm };
+}
+
+/**
  * Monta um bloco de comparação (robô × 106% do CDI) para um modo. Devolve null
  * quando o modo nunca teve ativo E a comparação nunca começou. `anteriorBloco`
  * carrega a régua já fixada (início/principal/lucro por moeda anteriores).
  * `cambio` (doc `global/cambio`) converte os lucros em moeda estrangeira p/ BRL.
  */
 async function montarBloco({ anteriorBloco, agregado, benchAA, agora, modo, cambio }) {
-  const { existe, porMoeda, plataformasBRL } = agregado;
+  const { existe, porMoeda, plataformasDoModo } = agregado;
 
   // Zera moedas já conhecidas (uma moeda que saiu do modo vai a 0, não congela
   // o valor antigo — o doc é salvo com merge).
@@ -350,20 +408,21 @@ async function montarBloco({ anteriorBloco, agregado, benchAA, agora, modo, camb
   // Início: fixado UMA vez (quando o modo passa a ter dados) e nunca recua.
   const inicio = anteriorBloco?.inicio_comparacao ?? agora.toISOString();
 
-  // Principal: patrimônio (BRL) na largada — melhor esforço via a referência
-  // diária do circuit breaker POR MODO; sem ela, null e tentamos de novo depois.
-  let patrimonioInicial = anteriorBloco?.patrimonio_inicial ?? null;
+  // Principal: fixado UMA vez, como o início — mas só vale enquanto tiver o
+  // carimbo da regra ATUAL. Um principal salvo sob a regra antiga (patrimônio
+  // dos dois modos juntos) é descartado e re-medido: é exatamente o número que
+  // fazia o comparativo real dividir o lucro por dinheiro virtual.
+  const carimbadoNaRegraAtual = anteriorBloco?.patrimonio_inicial_base === BASE_PATRIMONIO;
+  let patrimonioInicial = carimbadoNaRegraAtual ? (anteriorBloco?.patrimonio_inicial ?? null) : null;
+  let principalPlataformas = carimbadoNaRegraAtual ? (anteriorBloco?.patrimonio_inicial_plataformas ?? []) : [];
+  let principalFora = carimbadoNaRegraAtual ? (anteriorBloco?.patrimonio_inicial_fora ?? []) : [];
+  let principalMedidoEm = carimbadoNaRegraAtual ? (anteriorBloco?.patrimonio_inicial_medido_em ?? null) : null;
   if (patrimonioInicial === null) {
-    let soma = 0;
-    let achou = false;
-    for (const pid of plataformasBRL) {
-      const valor = (await obterEstadoPlataforma(pid)).patrimonio_inicio_dia?.[modo]?.valor;
-      if (Number.isFinite(valor)) {
-        soma += valor;
-        achou = true;
-      }
-    }
-    patrimonioInicial = achou ? r2(soma) : null;
+    const medido = await medirPrincipal({ plataformasDoModo, modo, cambio });
+    patrimonioInicial = medido.valor;
+    principalPlataformas = medido.plataformas;
+    principalFora = medido.fora;
+    principalMedidoEm = medido.medido_em;
   }
 
   const dias = Math.max(0, (agora.getTime() - new Date(inicio).getTime()) / 86_400_000);
@@ -388,6 +447,13 @@ async function montarBloco({ anteriorBloco, agregado, benchAA, agora, modo, camb
     dias_comparacao: r2(dias),
     dias_uteis_comparacao: diasUteis,
     patrimonio_inicial: patrimonioInicial,
+    // De ONDE saiu o principal (a dashboard mostra no rodapé): a regra sob a
+    // qual foi medido, quais carteiras entraram, quais ficaram de fora e a data
+    // da referência mais recente usada.
+    patrimonio_inicial_base: patrimonioInicial === null ? null : BASE_PATRIMONIO,
+    patrimonio_inicial_plataformas: principalPlataformas,
+    patrimonio_inicial_fora: principalFora,
+    patrimonio_inicial_medido_em: principalMedidoEm,
     comparativo: {
       bot: {
         periodo: r2(botPeriodo),
@@ -466,6 +532,10 @@ export async function atualizarRendaReal({ agora = new Date(), fetchFn = fetch }
   const anteriorReal = {
     inicio_comparacao: anterior?.inicio_comparacao ?? null,
     patrimonio_inicial: anterior?.patrimonio_inicial ?? null,
+    patrimonio_inicial_base: anterior?.patrimonio_inicial_base ?? null,
+    patrimonio_inicial_plataformas: anterior?.patrimonio_inicial_plataformas ?? [],
+    patrimonio_inicial_fora: anterior?.patrimonio_inicial_fora ?? [],
+    patrimonio_inicial_medido_em: anterior?.patrimonio_inicial_medido_em ?? null,
     lucro_por_moeda: anterior?.lucro_real_por_moeda ?? {},
   };
   const blocoReal = await montarBloco({ anteriorBloco: anteriorReal, agregado: agReal, benchAA, agora, modo: 'real', cambio });
@@ -483,6 +553,10 @@ export async function atualizarRendaReal({ agora = new Date(), fetchFn = fetch }
           dias_comparacao: blocoReal.dias_comparacao,
           dias_uteis_comparacao: blocoReal.dias_uteis_comparacao,
           patrimonio_inicial: blocoReal.patrimonio_inicial,
+          patrimonio_inicial_base: blocoReal.patrimonio_inicial_base,
+          patrimonio_inicial_plataformas: blocoReal.patrimonio_inicial_plataformas,
+          patrimonio_inicial_fora: blocoReal.patrimonio_inicial_fora,
+          patrimonio_inicial_medido_em: blocoReal.patrimonio_inicial_medido_em,
           comparativo: blocoReal.comparativo,
         }
       : {}),

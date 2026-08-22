@@ -56,6 +56,12 @@ export function criarConectorTT({ api }) {
       return rest.aguardarFill(credenciais, orderId, { simbolo: par });
     },
 
+    // Método OPCIONAL do contrato (§10.11): prova que a credencial OPERA, não
+    // só lê. Usa o mesmo dry-run das taxas — nada é enviado ao livro.
+    async podeExecutar({ par } = {}) {
+      return rest.testarOrdem(credenciais, { simbolo: par });
+    },
+
     /**
      * Estado do pregão de ações dos EUA (aberto/fechado/próxima abertura),
      * com cache curto — cobre feriados e meio-pregão pela própria corretora.

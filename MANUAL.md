@@ -64,21 +64,71 @@ Endereço: **<seu-projeto>.web.app** (login restrito à sua conta).
 - **Visão geral** — patrimônio consolidado, o tile **"Se vender tudo agora"**
   (seção 6.2), o comparativo **Rendimento real × 106% do CDI** (seção 6.1) e a
   tabela de ativos.
+  > **O patrimônio conta só dinheiro REAL** (V8.17): carteira em modo simulação
+  > não entra, nem o caixa virtual, nem as posições fictícias. Antes ela entrava,
+  > e o número lá de cima misturava dinheiro que existe com dinheiro que não
+  > existe. Os ativos simulados continuam na TABELA, com o selo "simulação" —
+  > só não somam no total.
+- **⚙ Parâmetros** — **todos os ativos numa tabela só**, um por linha, com todos
+  os números que você pode ajustar em cada um (inclusive ligar/desligar e
+  simulação × real). É aqui que se equilibra a carteira: o orçamento de um ativo
+  só faz sentido ao lado do orçamento do vizinho. Seção 5.
 - **Regras gerais da IA** — regras curtas que valem para TODOS os ativos
   (primeira camada do "pensamento" da IA).
 - **Supervisão semanal** — o que a IA supervisora escreveu no prompt do
-  analista, o diagnóstico da semana e o botão para desligar tudo (seção 8.7).
+  analista, o diagnóstico da semana e o botão para desligar tudo (seção 8.8).
 - **Tela de cada ativo** — números, última decisão da IA, posições abertas,
-  gráficos, histórico, a **configuração do ativo** e os editores de **prompt**
-  e **contexto** daquele ativo. No fim, a **Zona de risco** (excluir). O
+  gráficos, as **10 últimas operações** e os editores de **prompt** e
+  **contexto** daquele ativo. No fim, a **Zona de risco** (excluir). Os números de
+  configuração ficam na tela **⚙ Parâmetros**. No cartão "Ciclo de análise" há o
+  botão **⚡ Analisar agora**: ele pede a análise deste ativo no próximo minuto,
+  sem esperar o intervalo, e reinicia o relógio a partir dela (num ativo de bolsa
+  fora do pregão, o pedido é atendido quando o mercado abrir). O
   gráfico **Preço e operações** mostra a oscilação do preço com as operações
   executadas por cima: ▲ amarelo = compra, ▼ azul = venda — dá para conferir
   visualmente se o bot comprou na baixa e vendeu na alta (só operações do
   modo atual: simulação e real não se misturam).
-- **Tela da plataforma** — **status** (autenticação na corretora, testada de
-  hora em hora pelo bot, e situação do pregão), chaves/credenciais, cadeia de
-  modelos da IA, **cadastro de novo ativo** e o **template** (prompt padrão de
+- **Tela da plataforma** — abre clicando no **nome da plataforma** no menu.
+  Tem o **status** (autenticação na corretora, testada de hora em hora pelo bot, e
+  situação do pregão) — leia a caixa abaixo, porque ele tem QUATRO respostas e
+  duas parecem iguais —, chaves/credenciais, cadeia de modelos da IA, o gráfico do
+  **patrimônio da plataforma** (com botão Real/Simulação — são carteiras
+  separadas), o **cadastro de novo ativo** e o **template** (prompt padrão de
   todos os ativos dela).
+
+> ### O status da corretora tem QUATRO respostas
+>
+> | O que você vê | O que quer dizer | O que fazer |
+> | :--- | :--- | :--- |
+> | ✅ **autenticada e apta a operar** | tudo certo: a chave lê e consegue mandar ordem | nada |
+> | ⚠️ **lê mas NÃO envia ordens** | a chave entra na conta, mas a corretora recusa qualquer ordem | **agir agora** — ver abaixo |
+> | ✅ **autenticada** (sem mais nada) | a chave entra na conta; o robô **não teve como testar** o envio de ordem (o Mercado Bitcoin não oferece esse teste) | nada |
+> | ❌ **fora do ar** | a chave não entra na conta | conferir/regravar as chaves |
+>
+> **O ⚠️ é o que importa.** Ele existe porque em 13/08/2026 a chave da Binance
+> lia o saldo mas não tinha permissão de negociar — e a tela dizia "conectado"
+> há dias. Nesse estado **o robô não compra e também não vende**: nem a venda do
+> stop-loss, nem a da trava de lucro. As posições ficam sem saída.
+>
+> O conserto é no site da corretora, não aqui: na tela da chave de API, marque a
+> permissão de **negociar/spot trading** e confira se o **IP da VPS** está na
+> lista de IPs permitidos. O robô reconfere de hora em hora e o ⚠️ some sozinho
+> quando você acertar. Você também recebe um aviso no Telegram quando ele
+> aparece, e outro quando volta ao normal.
+
+> ### Na Toro e na Steam, a recomendação de COMPRA não tem valor — e é de propósito
+>
+> Nessas duas plataformas o robô **não envia ordem nenhuma**: ele só avisa. Desde
+> 22/08 a recomendação de compra chega como **alerta de oportunidade**, sem
+> quantidade e sem total — o robô não sabe quanto você tem na corretora, e um
+> total inventado seria pior que nenhum. No lugar do valor vem a **fatia sugerida
+> pela IA** ("20% do que você quiser alocar"), e quanto comprar é você quem
+> decide.
+>
+> Por causa disso, o **caixa que você digita em "Caixa da corretora (manual)"
+> deixou de segurar as recomendações**. Ele continua ali como informação, mas não
+> cala mais um aviso. O que NÃO mudou: o robô **nunca recomenda vender no
+> prejuízo** — nem ali.
 
 > **Template, prompt e contexto são TEXTO para a IA** — não são lugar de taxa
 > nem de número. Taxas ficam na *configuração do ativo* (seção 5).
@@ -167,13 +217,40 @@ da Binance para o robô poder comprar.
 
 ## 5. Configurações de um ativo (campo a campo)
 
-> **Edições valem em até 5 minutos.** Desde a V5.2, o robô guarda uma cópia
-> das configurações (ativos, chaves, prompts, contexto) por 5 minutos para não
-> estourar o limite gratuito de leituras do Firestore. Salvou algo na dashboard
-> e o robô ainda não obedeceu? Espere até 5 min — não precisa reiniciar nada.
-> As telas da dashboard continuam atualizando na hora, como sempre.
+> **Edições valem no próximo minuto.** Desde a V5.2, o robô guarda uma cópia
+> das configurações (ativos, chaves, prompts, contexto) para não estourar o
+> limite gratuito de leituras do Firestore — e em 14/08/2026 esse limite
+> estourou de verdade, deixando o robô 3h45 sem analisar nada. A V8.14 fez a
+> cópia durar 15 min em vez de 5, mas você não espera por isso: ao salvar, a
+> dashboard **avisa o robô** e ele joga a cópia fora na hora. Os 15 minutos
+> só entram se o aviso não chegar. As telas continuam atualizando na hora.
+>
+> A **parada de emergência** e o **desligar a IA** são ainda mais diretos:
+> chegam em segundos, porque o robô fica ouvindo esse documento em tempo real
+> em vez de perguntar de minuto em minuto.
 
-Na tela do ativo, seção **Configurações do ativo**:
+**Onde ficam:** na tela **⚙ Parâmetros** (menu, logo abaixo de "Visão geral").
+Cada ativo é uma linha e cada campo abaixo é uma coluna — passe o mouse no título
+da coluna para ver a explicação. Três coisas a saber:
+
+1. **Nada é salvo enquanto você não clicar em "Salvar alterações".** A célula que
+   você mexeu fica destacada até lá, e o botão "Desfazer" devolve tudo.
+2. **Só o que você mudou é gravado.** Os outros campos daquele ativo ficam como
+   estavam — inclusive os que a tela mostra com um valor padrão porque o ativo
+   nunca teve aquele campo.
+3. A **soma dos orçamentos** fica logo abaixo da tabela, separada por plataforma
+   e por modo, e se atualiza enquanto você digita. **Se um grupo passar de 100%,
+   a soma dele E as células de orçamento daquele grupo ficam vermelhas.** É só
+   aviso: dá para salvar assim mesmo.
+
+> **Simulação e real não se misturam nessa conta.** São dinheiros diferentes — a
+> carteira virtual e a conta na corretora —, e cada grupo divide os SEUS próprios
+> 100%. Por isso a Binance pode mostrar "MODO REAL: 100%" e "SIMULAÇÃO: 105%" ao
+> mesmo tempo, e só a segunda linha estar vermelha. E cuidado ao marcar ou
+> desmarcar **Simulação** num ativo: ele troca de grupo na hora, e os dois totais
+> mudam junto — a tela já mostra isso antes de você salvar.
+
+Os campos, um a um:
 
 | Campo | O que é |
 |---|---|
@@ -186,7 +263,7 @@ Na tela do ativo, seção **Configurações do ativo**:
 | **Taxa de compra (%)** | Comissão de compra que a corretora cobra de você (MB: ~0,7% real; Binance: 0,10%; Tastytrade: 0). |
 | **Taxa de venda (%)** | Comissão de venda (Binance: 0,10%; Tastytrade: deixe os 0,02% de reserva regulatória). |
 | **Limite de perda diária (%)** | Se o patrimônio da plataforma cair tanto no dia, bloqueia novas compras até o dia virar. 0 desliga. |
-| **Orçamento do ativo (%)** | Teto de quanto do patrimônio da plataforma este ativo pode ocupar. **0 = não compra** (é assim que ativo novo nasce). Abaixo do campo, a dashboard mostra a **soma dos orçamentos de todos os ativos** da plataforma — se passar de 100%, fica **vermelho** (você ainda consegue salvar; é só um aviso para reequilibrar entre os ativos). |
+| **Orçamento do ativo (%)** | Teto de quanto do patrimônio da plataforma este ativo pode ocupar. **0 = não compra** (é assim que ativo novo nasce). Abaixo do campo, a dashboard mostra a **soma dos orçamentos dos ativos do MESMO MODO** — os simulados dividem 100% entre si, os reais dividem outros 100%, porque são dinheiros diferentes (carteira virtual × conta na corretora). Se o seu grupo passar de 100%, fica **vermelho** (você ainda consegue salvar; é só um aviso para reequilibrar entre os ativos daquele modo). O texto também informa quanto o outro grupo soma, à parte. **Cuidado ao trocar o modo de um ativo:** ele muda de grupo, e os dois totais mudam junto — a soma na tela já acompanha a chave "modo simulação" antes mesmo de você salvar. |
 | **Distância máxima do stop-loss (%)** | Teto de quão LONGE do preço de compra a IA pode colocar o chão da posição (padrão 15%). Se ela pedir um chão mais distante, o robô **aperta** o valor até esse limite. É a trava que impede um stop tão largo que na prática não protege nada (seção 6.5). |
 | **Folga do stop-loss (%)** | O contrário do campo acima, e o mais importante dos dois: distância **MÍNIMA** entre o preço e o chão (padrão 2%). Chão que a IA peça mais perto que isso é recusado ou alargado, e é também a distância em que o robô sobe o chão sozinho. Foi o que resolveu o stop vendendo em prejuízo — leia a **seção 6.5.1** antes de mexer. |
 | **Trava de lucro — gatilho (%)** | Quanto a posição precisa subir acima do ponto de empate para o robô armar a trava que **realiza** o lucro (padrão 1%). **0 desliga a trava** neste ativo. Seção 6.5.2. |
@@ -234,7 +311,9 @@ fixa?". Como ele funciona:
   BCB (útil se quiser fixar a taxa ou testar cenários); **deixe o campo em
   branco e salve para voltar a usar a API**. O **% do CDI** troca o multiplicador
   do benchmark (padrão 106) — o título do card, a coluna e o rodapé passam a
-  mostrar o valor que você escolheu. O bot aplica na próxima rodada (até ~15 min).
+  mostrar o valor que você escolheu. O bot aplica no próximo recálculo do
+  comparativo (até ~1 h desde a V8.14 — antes eram 15 min; a passada é cara em
+  leituras e o número se move em escala de dias).
 - A tabela mostra as taxas equivalentes **ao ano, ao mês, na semana e no
   período**, além do dinheiro: seu lucro real × quanto 106% do CDI teria
   rendido sobre o mesmo capital inicial.
@@ -293,7 +372,7 @@ ligado, um **banner** no topo da Visão geral lembra você disso.
 | :--- | :--- | :--- | :--- |
 | ⛔ **Travar tudo** | tudo: nenhuma análise e nenhuma ordem, real ou simulação | só o heartbeat (o bot fica vivo) | ~1 min |
 | 🧠 **Desligar IA** | a IA: nenhuma análise nova, nenhuma compra, nenhuma venda decidida por ela; a supervisão semanal fica pausada | **o stop-loss e a trava de lucro** — suas posições continuam protegidas | ~1 min |
-| 🔕 **Desligar avisos** | as mensagens no Telegram | tudo o mais: o robô segue analisando e operando | ~5 min |
+| 🔕 **Desligar avisos** | as mensagens no Telegram | tudo o mais: o robô segue analisando e operando | ~1 min |
 | 💰 **Ligar modo vendas** | as compras (o robô passa a liquidar a carteira) | as vendas — ver §6.6 antes de usar | ~1 min |
 
 **Qual usar?**
@@ -368,6 +447,37 @@ preço devolver essa distância, ele vende e embolsa o lucro.
 
 Você vê a trava de cada posição na coluna **"Trava de lucro"** da tabela de
 posições abertas. "—" ali significa que ela ainda não armou.
+
+### E depois que o robô vende sozinho? (V8.16)
+
+**Ele pergunta à IA se vale voltar.** Antes o ciclo acabava ali, e a próxima
+análise só saía quando o intervalo vencesse E o preço tivesse andado o mínimo —
+o que às vezes levava horas ou dias. Nos números de produção isso custou caro:
+das 22 vendas pela trava de lucro, o preço estava **mais alto 6 horas depois em
+17 delas**, e num caso o robô voltou 15 horas depois pagando 9,84% a mais.
+
+Agora, na mesma rodada em que vende, ele chama a IA — e a pergunta que ela recebe
+já é outra: *a posição foi fechada agora, vale reentrar?* A IA recebe o motivo da
+venda, o preço, o resultado e **quantas vezes o robô já teve de sair desse ativo
+nas últimas 24 horas**.
+
+O que ela é orientada a fazer muda conforme o motivo:
+
+| Motivo da venda | O que a IA é instruída a pensar |
+|---|---|
+| **Trava de lucro** | A saída foi no lucro e a tese pode continuar de pé. Voltar é resposta legítima — mas pesando o custo da ida e volta contra o movimento que ainda falta. |
+| **Stop-loss** | O chão foi furado, ou seja, a tese foi **invalidada pelo preço**. O padrão é **AGUARDAR**; voltar exige um sinal novo, não a mesma tese que acabou de falhar. |
+| **2 ou mais saídas em 24 h** | O preço está serrando para os dois lados. Aí AGUARDAR é quase sempre o certo, e a IA é avisada disso. |
+
+Duas coisas **não** mudaram, e são as importantes:
+
+- **A IA nunca decide a venda automática.** Quem vende continua sendo o robô, pela
+  regra. Quando a IA é chamada, o lote já saiu da carteira — ela não tem o que
+  vender, só o que decidir sobre voltar.
+- **Na Toro e na Steam nada disso acontece**, porque lá a "venda" é só uma
+  recomendação para você executar: a posição continua aberta, e não há reentrada
+  a decidir. Com a **IA desligada** (seção 6.3) também não: o que o botão desliga
+  é quem decide, não quem protege.
 
 ---
 
@@ -599,13 +709,42 @@ depósito mais baratas — não mexer na configuração do robô.
 
 ## 8. Toro — modo assistido (ações e FIIs da B3)
 
+> **A Toro é a sua carteira de PATRIMÔNIO, não de trade (V8.16).** Enquanto as
+> outras plataformas procuram lucro em movimentos de dias, aqui o objetivo é
+> outro: capital que cresça ao longo de **anos**, rendendo um pouco **acima da
+> Selic**, com a carteira diversificada. Isso mudou três coisas de verdade, não
+> só o texto do prompt:
+>
+> 1. **A IA da Toro não recebe as regras gerais do robô.** Elas foram escritas
+>    para day trade de cripto (RSI de 15 minutos, girar rápido, realizar 1%) e
+>    tinham prioridade sobre tudo — inclusive sobre o template. O template da
+>    Toro virou o texto principal dela, escrito do zero com o objetivo de longo
+>    prazo: quando comprar, quando NÃO vender e por que "AGUARDAR" é a resposta
+>    normal.
+> 2. **A trava de lucro nasce DESLIGADA** nos ativos novos da Toro. Ela é a peça
+>    certa em cripto, onde realizar 1% muitas vezes é a estratégia; aqui ela
+>    venderia exatamente as posições que a carteira existe para segurar.
+> 3. **A análise passou a ser a cada 6 horas** (era 1 hora), com o chão largo
+>    (stop a até 25% de distância, folga de 8%) e variação mínima de 2%. O candle
+>    é diário: analisar de hora em hora relê o mesmo dado e só gasta cota.
+>
+> **O que a IA continua NÃO conseguindo fazer: diversificar.** Ela vê um ativo
+> por vez e nunca enxerga a carteira inteira. Quem diversifica é você,
+> distribuindo o **orçamento (%)** entre os papéis na tela ⚙ Parâmetros. O que
+> ela faz é respeitar o teto de cada ativo — e é isso que a diversificação é, na
+> prática.
+>
+> **Ajustes em ativo JÁ cadastrado não mudam sozinhos**: os padrões acima valem
+> para ativos novos. Nos que já existem, ajuste na tela ⚙ Parâmetros (o principal
+> é pôr o *Trava gatilho (%)* em 0).
+
 A Toro **não tem API** — o robô não consegue nem ler sua conta, muito menos
 enviar ordem. Por isso a plataforma TORO funciona em **modo assistido**:
 
 1. **Você informa o que tem** — caixa e operações (passos abaixo).
 2. **O robô analisa sozinho** — cotações e candles **diários** da B3 vêm da
    API pública **brapi.dev**; os indicadores e a IA funcionam como nas outras
-   plataformas (swing trade: 1 análise por hora, dentro do pregão).
+   plataformas (horizonte de meses: 1 análise a cada 6 horas, dentro do pregão).
 3. **O robô RECOMENDA, você executa** — quando a IA decide comprar/vender e o
    Motor de Regras aprova (as regras valem iguais: nunca recomenda vender
    posição no prejuízo), aparece o card **"📣 Recomendação para você
@@ -681,6 +820,11 @@ você, no site da Steam. Tudo fica na tela **🎮 Steam** do menu.
   custam coisas diferentes: análise gasta IA; preço gasta uma consulta por item
   (a Steam corta quem passa de ~20 por minuto); procurar update é uma consulta
   só. Mínimo de 15 minutos em cada.
+- **Botão "⏸ Pausar análises da Steam"** (V8.16): desliga só a análise da IA —
+  que é a única parte cara, uma chamada por item marcado a cada rodada. **Preços,
+  atualizações do CS2 e alertas de preço-alvo continuam funcionando**, e nada é
+  apagado: o mesmo botão retoma tudo. Use quando quiser economizar cota da IA sem
+  perder o acompanhamento do inventário.
 
 ### O número que mais importa: a taxa é ~15%
 
@@ -723,7 +867,78 @@ a cada coleta e monta a série sozinho**: em um dia ele já compara com ontem, e
 uma semana com a semana passada. Enquanto uma janela não estiver coberta, ela
 aparece como desconhecida — nunca como "0%", que seria mentira.
 
-## 8.5 Avisos no Telegram
+## 8.5 Contas espelho — a mesma decisão em mais de uma conta (V8.18)
+
+Serve para colocar a conta de outra pessoa (ou uma segunda sua) na **mesma
+corretora**, recebendo as ordens que o robô decidir para a SUA conta.
+
+**O ponto que faz isso valer a pena:** a IA é chamada **uma vez só**, olhando a
+sua carteira. Uma conta a mais não custa nenhuma chamada de IA — e é por isso que
+cabe no plano gratuito. O caminho fácil (cadastrar a mesma corretora duas vezes,
+como se fossem plataformas diferentes) **dobraria** o consumo de IA e faria o
+robô inteiro decidir pior, inclusive na sua conta.
+
+### Onde fica
+
+Tela da plataforma → cartão **"Contas espelho"**. Lá você cadastra a conta (um
+apelido + as chaves de API dela), vê o saldo que o robô leu, se a conexão está
+ok, e as **ordens sombra** — o que aquela conta teria comprado, lado a lado com o
+que a sua comprou.
+
+### As quatro fases, e onde estamos
+
+O recurso está sendo entregue por partes, de propósito: mandar ordem no dinheiro
+de outra pessoa é o último passo, não o primeiro.
+
+| Fase | O que faz | Estado |
+|---|---|---|
+| 1 | Lê o saldo da conta e mostra na tela | ✅ pronta |
+| 2 | Calcula o que ela compraria (ordem "sombra") | ✅ pronta |
+| 3a | Ela passa a ter carteira e lotes próprios, em simulação | ✅ pronta |
+| 4 | Stop-loss e trava de lucro nos lotes dela | ✅ pronta |
+| **3b** | **A ordem sair de verdade** | **falta** |
+
+Hoje, portanto: **nenhuma ordem é enviada para a conta espelho.** Ela faz tudo em
+simulação — compra, acumula lotes, sobe o chão, arma a trava e sai sozinha — para
+você conferir por semanas antes de qualquer dinheiro se mexer.
+
+### O que a conta espelho NÃO faz (e por quê)
+
+**Ela não recebe a venda decidida pela IA.** Quando a IA manda vender, ela aponta
+lotes específicos da SUA carteira, com os preços de entrada seus — e esses lotes
+não existem na conta do outro. Reinterpretar isso mudaria o tamanho da saída.
+
+Isso importa menos do que parece: **81% das vendas do sistema são do Motor**
+(stop-loss e trava de lucro), não da IA. E o Motor funciona na conta espelho,
+lote por lote, sem gastar nada. A conta perde os 19% de vendas decididas pela IA
+e mantém o resto.
+
+**Consequência aceita:** as duas contas vão divergir com o tempo. Isso é o
+comportamento correto, não um defeito — cada conta é julgada pelo próprio custo,
+e a regra de nunca vender no prejuízo vale para cada uma separadamente.
+
+### O aviso vermelho: "é a MESMA conta"
+
+Se o saldo da conta espelho for **idêntico** ao da sua, o robô avisa em vermelho.
+Isso quer dizer que a chave aponta para a mesma carteira da corretora — é o que
+acontece quando você cria uma segunda chave de API na sua própria conta (ótimo
+para testar, e foi assim que este recurso foi validado).
+
+Em simulação isso é inofensivo. **Em ordem de verdade, cada compra sairia duas
+vezes na sua carteira.** Não ligue o modo real numa conta marcada assim.
+
+### Se for a conta de outra pessoa
+
+Duas coisas que valem a conversa antes:
+
+1. **A chave dela pode nascer sem permissão de saque.** Na Binance, ligar
+   "Enable Spot Trading" e deixar "Enable Withdrawals" desligado. Assim o pior
+   caso é uma operação ruim, nunca dinheiro saindo.
+2. **As decisões são calibradas para a SUA carteira** — horizonte, tolerância a
+   risco e tamanho. A dela pode ser outra, e o sistema não tem como saber.
+
+
+## 8.6 Avisos no Telegram
 
 O robô te manda mensagem quando algo acontece. **Não usa IA** — é só formatação
 dos dados que o sistema já tem, então não consome quota nenhuma.
@@ -783,7 +998,7 @@ você confundir dinheiro de verdade com teste.
 
 ---
 
-## 8.6 Relatório de decisões (semanal)
+## 8.7 Relatório de decisões (semanal)
 
 A cada 7 dias o robô mede as próprias decisões e manda um resumo no Telegram
 (também fica na Visão geral, card **Relatório de decisões**). **Não usa IA** —
@@ -796,7 +1011,7 @@ A cada 7 dias o robô mede as próprias decisões e manda um resumo no Telegram
 | **Resultado realizado** | Lucro do período e **quanto foi para taxas**, por moeda (nunca somadas entre si). Vale comparar os dois: taxa maior que o lucro significa giro demais para o tamanho do movimento capturado. |
 | **Risco:retorno** | Quanto cada lote ganhou por unidade de risco aceita na entrada. **Abaixo de 1×** o lote rendeu menos do que arriscou; a assimetria que as regras gerais pregam pede mediana bem acima de 1. |
 
-Estes mesmos números são a matéria-prima da **supervisão semanal** (seção 8.7),
+Estes mesmos números são a matéria-prima da **supervisão semanal** (seção 8.8),
 que os interpreta e escreve a correção no prompt do analista.
 
 **O primeiro relatório sai 7 dias depois de o robô subir com o recurso** — a
@@ -806,7 +1021,7 @@ risco:retorno (o chão inicial delas não foi gravado).
 
 ---
 
-## 8.7 Supervisão semanal — a IA que corrige a IA (V7.2)
+## 8.8 Supervisão semanal — a IA que corrige a IA (V7.2)
 
 Uma vez por semana, um **segundo agente de IA** lê tudo o que o analista fez —
 as decisões, as justificativas, as posições que abriu, como elas fecharam, o
@@ -868,7 +1083,7 @@ prompt do analista **não mudar** — nunca o contrário.
 
 ---
 
-## 8.8 Resetar tudo e recomeçar do zero
+## 8.9 Resetar tudo e recomeçar do zero
 
 Depois de muitas mudanças de prompt e de regra, os dados acumulados descrevem
 várias versões diferentes do robô ao mesmo tempo — e param de responder qualquer

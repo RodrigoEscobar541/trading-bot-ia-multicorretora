@@ -27,8 +27,13 @@ const arredondarValor = (v) => Math.round(v * 100) / 100;
  * lido por quem chamou — evita reler o mesmo doc; precisa ser DESTE ciclo,
  * de antes de qualquer ordem.
  */
-export async function garantirCarteiraVirtual(plataformaId, conector, estadoConhecido = null) {
-  const estado = estadoConhecido ?? (await obterEstadoPlataforma(plataformaId));
+export async function garantirCarteiraVirtual(plataformaId, conector, estadoConhecido = null, escopo = {}) {
+  // ESCOPO (V8.18): por padrão a carteira virtual é a da PLATAFORMA, exatamente
+  // como sempre foi. A conta ESPELHO passa `lerEstado`/`salvarEstado` próprios
+  // e ganha carteira própria, sem que uma linha da matemática mude — e é a
+  // matemática (taxa, arredondamento) que precisa ser idêntica entre as duas.
+  const { lerEstado = obterEstadoPlataforma, salvarEstado = salvarEstadoPlataforma } = escopo;
+  const estado = estadoConhecido ?? (await lerEstado(plataformaId));
   if (estado.carteira_virtual) return estado.carteira_virtual;
 
   const reais = await conector.saldos();
@@ -38,10 +43,10 @@ export async function garantirCarteiraVirtual(plataformaId, conector, estadoConh
     saldos: { ...reais.saldos },
     inicializada_em: agora,
   };
-  await salvarEstadoPlataforma(plataformaId, {
+  await salvarEstado(plataformaId, {
     carteira_virtual: carteira,
     // Foto dos saldos reais — referência do detector de depósitos/saques.
-    sincronizacao_saldos_reais: { saldo_moeda: reais.saldo_moeda, saldos: { ...reais.saldos }, em: agora },
+    sincronizacao_saldos_reais: fotoSaldosReais(reais, null, agora),
   });
   log.info(`carteira virtual da plataforma ${plataformaId} inicializada com os saldos reais`, {
     saldo_moeda: reais.saldo_moeda,
@@ -78,18 +83,47 @@ const MINIMO_DELTA_MOEDA = 0.01;
 const MINIMO_DELTA_QTD = 0.00000001;
 
 /**
+ * A FOTO dos saldos reais que vira referência do detector de depósitos/saques.
+ *
+ * Símbolo que a foto anterior conhecia e SUMIU da conta real volta como ZERO
+ * explícito. Isso não é preciosismo: as corretoras omitem saldo zerado
+ * (`bnPrivado.obterSaldos` só inclui `disponivel > 0`) e o estado é gravado com
+ * merge (`firebaseClient.salvarDoc` → `set(..., { merge: true })`), que **nunca
+ * remove chave de mapa**. Sem o zero explícito a foto guarda para sempre a
+ * quantidade antiga, o MESMO saque é recalculado a cada ciclo e some com
+ * qualquer lote novo segundos depois da compra — foi o que aconteceu em
+ * produção entre 08 e 12/08/2026: 5 lotes de BTC (BN e MB) fechados como
+ * `externa`, sem resultado, dois deles 3 segundos após a própria compra do bot.
+ *
+ * Função pura (recebe a leitura da corretora, devolve o que gravar).
+ */
+export function fotoSaldosReais(atual, referenciaAnterior, agora) {
+  const saldos = { ...(atual.saldos ?? {}) };
+  for (const simbolo of Object.keys(referenciaAnterior?.saldos ?? {})) {
+    if (!(simbolo in saldos)) saldos[simbolo] = 0;
+  }
+  return { saldo_moeda: atual.saldo_moeda, saldos, em: agora };
+}
+
+/**
  * Detecta depósitos/saques na conta REAL e espelha o delta na carteira
  * virtual (a simulação continua paralela: só o que veio de fora entra).
  * Chamada a cada análise em modo simulação. MELHOR ESFORÇO: falha aqui não
  * pode derrubar a análise — loga aviso e devolve a carteira como está.
  * `estadoConhecido` como em garantirCarteiraVirtual (V5_2_Plan.MD §3.4);
- * um estado de ANTES da semeadura devolve null e quem chamou usa a carteira
+ * um estado de ANTES da semeadura devolve carteira null e quem chamou usa a
  * recém-semeada — mesmo resultado da releitura.
+ *
+ * Devolve `{ carteira, movimentacao_externa }`. O segundo campo existe para o
+ * CIRCUIT BREAKER: depósito e saque mexem no patrimônio sem que ninguém tenha
+ * perdido dinheiro, e a referência do dia precisa ser re-ancorada — senão um
+ * saque vira "patrimônio caiu 20% hoje" e bloqueia as compras da plataforma
+ * inteira até o dia virar (produção, 09 e 12/08/2026: 3 compras rejeitadas).
  */
 export async function sincronizarComSaldosReais(plataformaId, conector, estadoConhecido = null) {
   const estado = estadoConhecido ?? (await obterEstadoPlataforma(plataformaId));
   const carteira = estado.carteira_virtual;
-  if (!carteira) return null; // ainda não semeada — garantirCarteiraVirtual cuida
+  if (!carteira) return { carteira: null, movimentacao_externa: false }; // garantirCarteiraVirtual cuida
 
   try {
     const atual = await conector.saldos();
@@ -99,9 +133,9 @@ export async function sincronizarComSaldosReais(plataformaId, conector, estadoCo
     if (!referencia) {
       // Carteiras antigas (antes deste recurso): estabelece a referência.
       await salvarEstadoPlataforma(plataformaId, {
-        sincronizacao_saldos_reais: { saldo_moeda: atual.saldo_moeda, saldos: { ...atual.saldos }, em: agora },
+        sincronizacao_saldos_reais: fotoSaldosReais(atual, null, agora),
       });
-      return carteira;
+      return { carteira, movimentacao_externa: false };
     }
 
     const deltaMoeda = atual.saldo_moeda - (referencia.saldo_moeda ?? 0);
@@ -112,23 +146,23 @@ export async function sincronizarComSaldosReais(plataformaId, conector, estadoCo
       if (Math.abs(delta) >= MINIMO_DELTA_QTD) deltasAtivos[s] = delta;
     }
     if (Math.abs(deltaMoeda) < MINIMO_DELTA_MOEDA && Object.keys(deltasAtivos).length === 0) {
-      return carteira; // nada mudou na conta real
+      return { carteira, movimentacao_externa: false }; // nada mudou na conta real
     }
 
     const ajustada = aplicarDeltaExterno(carteira, { deltaMoeda, deltasAtivos });
     await salvarEstadoPlataforma(plataformaId, {
       carteira_virtual: ajustada,
-      sincronizacao_saldos_reais: { saldo_moeda: atual.saldo_moeda, saldos: { ...atual.saldos }, em: agora },
+      sincronizacao_saldos_reais: fotoSaldosReais(atual, referencia, agora),
     });
     log.info('movimentação externa detectada na conta real — espelhada na carteira virtual', {
       plataforma: plataformaId,
       delta_moeda: arredondarValor(deltaMoeda),
       deltas_ativos: deltasAtivos,
     });
-    return ajustada;
+    return { carteira: ajustada, movimentacao_externa: true };
   } catch (e) {
     log.aviso('não foi possível sincronizar saldos reais — seguindo com a carteira virtual atual', e);
-    return carteira;
+    return { carteira, movimentacao_externa: false };
   }
 }
 
@@ -138,8 +172,9 @@ export async function sincronizarComSaldosReais(plataformaId, conector, estadoCo
  * "fill" no mesmo formato que a execução real:
  *   { quantidade, valor, preco, taxa, lucro_liquido|null }
  */
-export async function executarOrdemSimulada({ plataformaId, ativoId, ordem, config }) {
-  const estado = await obterEstadoPlataforma(plataformaId);
+export async function executarOrdemSimulada({ plataformaId, ativoId, ordem, config, escopo = {} }) {
+  const { lerEstado = obterEstadoPlataforma, salvarEstado = salvarEstadoPlataforma } = escopo;
+  const estado = await lerEstado(plataformaId);
   const carteira = estado.carteira_virtual;
   if (!carteira) {
     throw new Error('carteira virtual não inicializada — garantirCarteiraVirtual() antes');
@@ -159,7 +194,7 @@ export async function executarOrdemSimulada({ plataformaId, ativoId, ordem, conf
     carteira.saldo_moeda = arredondarValor(carteira.saldo_moeda - valor);
     carteira.saldos[ativoId] = arredondarQtd((carteira.saldos[ativoId] ?? 0) + qtd);
 
-    await salvarEstadoPlataforma(plataformaId, { carteira_virtual: carteira });
+    await salvarEstado(plataformaId, { carteira_virtual: carteira });
     return {
       quantidade: qtd,
       valor,
@@ -200,7 +235,7 @@ export async function executarOrdemSimulada({ plataformaId, ativoId, ordem, conf
     carteira.saldos[ativoId] = arredondarQtd(saldoAtivo - qtd);
     carteira.saldo_moeda = arredondarValor(carteira.saldo_moeda + (bruto - taxa));
 
-    await salvarEstadoPlataforma(plataformaId, { carteira_virtual: carteira });
+    await salvarEstado(plataformaId, { carteira_virtual: carteira });
     return {
       quantidade: qtd,
       valor: arredondarValor(bruto - taxa),

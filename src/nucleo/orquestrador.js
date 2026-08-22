@@ -13,15 +13,16 @@ import {
   salvarEstadoAtivo,
   salvarEstadoPlataforma,
   salvarStatusBot,
-  obterControle,
   salvarControle,
   obterRelatorioDecisoes,
   salvarRelatorioDecisoes,
   obterSupervisao,
   salvarApiMeta,
+  salvarApiMetaConta,
+  salvarEstadoConta,
   mascararApi,
 } from '../firebase/firebaseClient.js';
-import { plataformasCache, apiCache, ativosCache, telegramCache, supervisorConfigCache, invalidarCatalogo } from './catalogo.js';
+import { plataformasCache, apiCache, ativosCache, contasCache, apiContaCache, telegramCache, supervisorConfigCache, invalidarCatalogo } from './catalogo.js';
 import {
   notificarProblema,
   notificarRecuperacao,
@@ -38,6 +39,7 @@ import {
 } from './relatorioDecisoes.js';
 import { deveSupervisionar, rodarSupervisao, formatarSupervisao, naJanelaDeQuota } from './supervisor.js';
 import { filtrarPlataformas, ehPrimario } from './instancia.js';
+import { lerControle } from './controleVivo.js';
 import { criarConector } from '../conectores/conector.js';
 import { estadoModoVendas } from '../regras/regrasEngine.js';
 import { executarCicloAtivo } from './cicloAtivo.js';
@@ -80,8 +82,37 @@ export function dentroDoHorarioDeMercado(manifest, agora = new Date(), timezone 
   return diaUtil && minutos >= inicio && minutos < fim;
 }
 
+// Teto do recuo: 8 × o intervalo do ativo. Acima disso o ativo sumiria da
+// operação por um dia inteiro sem ninguém perceber.
+const FATOR_MAXIMO_RECUO = 8;
+
+/**
+ * Quanto esperar antes de tentar de novo um ativo cujo ciclo FALHOU (V8.13).
+ * Dobra a cada falha consecutiva, a partir do intervalo normal do ativo e até
+ * o teto — o mesmo recuo que qualquer cliente educado de API faz.
+ *
+ * Existe porque a falha do ciclo acontece ANTES de o carimbo de horário ser
+ * gravado: sem isto, o ativo com erro persistente é retentado a cada tick de 1
+ * minuto, para sempre. Foi o que aconteceu com a Steam — 4 itens × 1.440 ticks
+ * = ~5.760 chamadas/dia numa API que tolera ~20/min, o que transformou o
+ * primeiro HTTP 429 num bloqueio permanente que se auto-alimentava (4.723
+ * erros 429 em 24 h, e nenhuma análise concluída desde 05/08/2026).
+ */
+export function esperaAposFalhaMs(config, consecutivas) {
+  const intervaloMs = (Number(config.tempo_entre_analises_minutos) || 15) * 60_000;
+  const fator = Math.min(2 ** Math.max(0, Number(consecutivas ?? 1) - 1), FATOR_MAXIMO_RECUO);
+  return intervaloMs * fator;
+}
+
 /** O intervalo do ativo já venceu desde a última análise/verificação? */
 export function deveAnalisarAgora({ config, estado, agora = new Date() }) {
+  // Recuo após falha vem primeiro: o ciclo que quebrou não gravou carimbo
+  // nenhum, então a régua normal abaixo o consideraria vencido em todo tick.
+  const falha = estado.falha_ciclo;
+  if (falha?.em) {
+    const espera = esperaAposFalhaMs(config, falha.consecutivas);
+    if (agora.getTime() - new Date(falha.em).getTime() < espera - TOLERANCIA_MS) return false;
+  }
   const ultima = [estado.horario_ultima_verificacao, estado.horario_ultima_analise]
     .filter(Boolean)
     .sort()
@@ -99,6 +130,64 @@ const VERIFICACAO_CONEXAO_MS = 60 * 60_000;
 const REVERIFICACAO_FALHA_MS = 5 * 60_000;
 const conexaoVerificadaEm = new Map(); // plataformaId → epoch ms
 const conexaoUltimoOk = new Map(); // plataformaId → boolean (loga só transições)
+const execucaoUltimoOk = new Map(); // plataformaId → true|false|null (idem)
+
+/**
+ * Qual par usar na PROVA DE EXECUÇÃO (§10.11). Pura, exportada para teste.
+ *
+ * Prefere um ativo em modo REAL e ligado — é onde a falta de permissão custa
+ * dinheiro de verdade, e onde o incidente de 13/08 aconteceu. Sem nenhum,
+ * cai para o primeiro ligado e depois para o primeiro de todos: saber que a
+ * chave não opera continua valendo mesmo com tudo em simulação, porque é
+ * exatamente isso que o dono descobriria tarde demais ao virar a chave.
+ */
+export function parParaProvaDeExecucao(ativos = []) {
+  const par = (a) => a?.manifest?.par || null;
+  const real = ativos.find((a) => a?.config?.modo_simulacao === false && a?.config?.ativo !== false && par(a));
+  const ligado = ativos.find((a) => a?.config?.ativo !== false && par(a));
+  return par(real ?? ligado ?? ativos.find((a) => par(a))) ?? null;
+}
+
+/**
+ * PROVA DE EXECUÇÃO (§10.11): a credencial OPERA ou só LÊ?
+ *
+ * O ✅ da dashboard sempre veio de `saldos()`, que é LEITURA. Em 13/08 a chave
+ * da Binance lia e não negociava, e a tela mostrou "conectado" por dias — a
+ * única ordem real voltava `-2015`, e nem a venda do stop-loss teria saído.
+ *
+ * Gate por CAPACIDADE (`podeExecutar`), nunca por nome de plataforma: quem não
+ * tem um caminho de teste que não cria ordem simplesmente não é testado, e isso
+ * não é falha (o MB não tem; as assistidas não executam por natureza).
+ *
+ * Roda na MESMA cadência da verificação de conexão — nenhuma leitura de
+ * Firestore nova, e uma chamada autenticada a mais por hora por plataforma.
+ * Nunca lança: é diagnóstico, e diagnóstico não pode derrubar a rodada.
+ */
+async function verificarExecucaoPlataforma(plataforma, conector) {
+  if (typeof conector?.podeExecutar !== 'function') return null;
+  let resultado;
+  try {
+    const ativos = await ativosCache(plataforma.id);
+    const par = parParaProvaDeExecucao(ativos);
+    resultado = (await conector.podeExecutar({ par })) ?? { ok: null, erro: 'sem resposta' };
+  } catch (e) {
+    // O contrato diz que `podeExecutar` nunca lança; se lançar, o defeito é do
+    // conector e vira INCONCLUSIVO — nunca um alarme de permissão.
+    resultado = { ok: null, erro: e?.message ?? String(e) };
+  }
+
+  const anterior = execucaoUltimoOk.has(plataforma.id) ? execucaoUltimoOk.get(plataforma.id) : undefined;
+  if (anterior !== resultado.ok) {
+    if (resultado.ok === false) {
+      log.aviso(`plataforma ${plataforma.id}: a chave LÊ mas NÃO OPERA (${resultado.erro})`);
+    } else if (resultado.ok === true && anterior === false) {
+      log.info(`plataforma ${plataforma.id}: permissão de ordem restabelecida`);
+    }
+    await avisarExecucao(plataforma, resultado);
+  }
+  execucaoUltimoOk.set(plataforma.id, resultado.ok);
+  return resultado;
+}
 
 /**
  * Verifica (1×/hora, melhor esforço) se as credenciais da plataforma
@@ -124,6 +213,11 @@ async function verificarConexaoPlataforma(plataforma, api, conector) {
   } catch (e) {
     conexao = { ok: false, erro: e.message, verificado_em: new Date().toISOString() };
   }
+  // Os dois campos da PROVA DE EXECUÇÃO nascem SEMPRE, mesmo sem resposta: o
+  // estado é gravado com merge, que não apaga chave de mapa (lição da V8.12).
+  // Omiti-los deixaria um `pode_executar: false` velho na tela para sempre.
+  conexao.pode_executar = null;
+  conexao.erro_execucao = null;
   if (conexaoUltimoOk.get(plataforma.id) !== conexao.ok) {
     const msg = `plataforma ${plataforma.id}: autenticação ${conexao.ok ? 'OK' : `FALHOU (${conexao.erro})`}`;
     if (conexao.ok) log.info(msg);
@@ -133,11 +227,76 @@ async function verificarConexaoPlataforma(plataforma, api, conector) {
     await avisarConexao(plataforma, conexao);
   }
   conexaoUltimoOk.set(plataforma.id, conexao.ok);
+
+  // A prova de EXECUÇÃO só faz sentido depois de a leitura passar: com a
+  // credencial fora do ar, o teste de ordem falharia por autenticação e
+  // acusaria "não opera" quando o problema é outro.
+  if (conexao.ok) {
+    const execucao = await verificarExecucaoPlataforma(plataforma, conector);
+    if (execucao) {
+      conexao.pode_executar = execucao.ok; // true | false | null (não verificado)
+      conexao.erro_execucao = execucao.ok === true ? null : (execucao.erro ?? null);
+    }
+  }
+
   await publicarMetaApi(plataforma.id);
   try {
     await salvarEstadoPlataforma(plataforma.id, { conexao });
   } catch (e) {
     log.aviso(`não foi possível persistir o status de conexão de ${plataforma.id}`, e);
+  }
+}
+
+// Última leitura de saldo de cada conta espelho: `plataforma/conta` → epoch ms.
+const contaVerificadaEm = new Map();
+
+/**
+ * CONTAS ESPELHO — fase 1 (V8.18): ler o saldo e provar que a credencial
+ * funciona. **Nenhuma ordem é enviada nesta fase**, e nenhuma decisão depende
+ * disto — é leitura para a dashboard e para o dono conferir antes de seguir.
+ *
+ * Mesma cadência da verificação de conexão da plataforma (1×/hora), pelo mesmo
+ * motivo: é uma chamada autenticada à corretora, e o saldo de uma conta que não
+ * opera não muda sozinho. Não custa leitura de Firestore no tick — a lista de
+ * contas e as credenciais vêm do catálogo cacheado.
+ *
+ * NUNCA LANÇA. Contrato igual ao do Telegram: conta espelho é acessório, e um
+ * erro nela não pode derrubar a rodada da conta principal — que é a que opera.
+ */
+async function lerContasEspelho(plataforma) {
+  let contas;
+  try {
+    contas = (await contasCache(plataforma.id)).filter((c) => c.ativa);
+  } catch (e) {
+    log.aviso(`[${plataforma.id}] falha ao listar as contas espelho — seguindo`, e);
+    return;
+  }
+  for (const conta of contas) {
+    const chave = `${plataforma.id}/${conta.id}`;
+    const ultima = contaVerificadaEm.get(chave) ?? 0;
+    if (Date.now() - ultima < VERIFICACAO_CONEXAO_MS) continue;
+    contaVerificadaEm.set(chave, Date.now());
+
+    let estado;
+    try {
+      const api = await apiContaCache(plataforma.id, conta.id);
+      const conector = criarConector(plataforma, api);
+      const saldos = await conector.saldos();
+      estado = {
+        conexao: { ok: true, erro: null, verificado_em: new Date().toISOString() },
+        saldo: { moeda: saldos.moeda, saldo_moeda: saldos.saldo_moeda, saldos: saldos.saldos ?? {} },
+      };
+      log.info(`[${chave}] conta espelho lida: ${saldos.saldo_moeda} ${saldos.moeda}`);
+    } catch (e) {
+      estado = { conexao: { ok: false, erro: e.message, verificado_em: new Date().toISOString() } };
+      log.aviso(`[${chave}] conta espelho não autenticou`, e);
+    }
+    try {
+      await salvarEstadoConta(plataforma.id, conta.id, estado);
+      await salvarApiMetaConta(plataforma.id, conta.id, mascararApi(await apiContaCache(plataforma.id, conta.id)));
+    } catch (e) {
+      log.aviso(`[${chave}] falha ao persistir o estado da conta espelho`, e);
+    }
   }
 }
 
@@ -270,6 +429,39 @@ async function avisarQuotaIA(plataforma) {
   }
 }
 
+/**
+ * Avisa no Telegram que a chave da corretora LÊ mas NÃO OPERA (ou que voltou a
+ * operar). Nunca lança.
+ *
+ * Chave de anti-spam PRÓPRIA (`execucao:{P}`), separada da conexão: os dois
+ * problemas são diferentes e um não pode engolir o aviso do outro — "a
+ * corretora caiu" se resolve sozinho, "a chave não tem permissão" não.
+ * O estado INCONCLUSIVO (`null`) não avisa nada: rede instável avisando de hora
+ * em hora treinaria o dono a ignorar a mensagem que importa.
+ */
+async function avisarExecucao(plataforma, execucao) {
+  try {
+    const config = await telegramCache();
+    const chave = `execucao:${plataforma.id}`;
+    const nome = plataforma.nome ?? plataforma.id;
+    if (execucao.ok === true) {
+      await notificarRecuperacao({ chave, titulo: `${nome}: a chave voltou a poder enviar ordens`, config });
+    } else if (execucao.ok === false) {
+      await notificarProblema({
+        chave,
+        titulo: `${nome}: a chave LÊ mas NÃO consegue enviar ordens`,
+        detalhe:
+          `${execucao.erro ?? ''}\n\n` +
+          'Nenhuma ordem sai desta plataforma — nem a venda do stop-loss. ' +
+          'Confira as permissões e a lista de IPs da chave na corretora.',
+        config,
+      });
+    }
+  } catch (e) {
+    log.aviso('falha ao avisar a permissão de ordem no Telegram', e);
+  }
+}
+
 /** Avisa no Telegram que uma corretora caiu (ou voltou). Nunca lança. */
 async function avisarConexao(plataforma, conexao) {
   try {
@@ -294,6 +486,10 @@ async function avisarConexao(plataforma, conexao) {
 // evita uma escrita por minuto no Firestore).
 const mercadoPersistido = new Map(); // plataformaId → 'aberto'|'fechado'
 
+// Última pausa de análises já logada por plataforma (V8.16): loga a TRANSIÇÃO,
+// nunca um aviso por tick — 1.440 linhas iguais por dia esconderiam o resto.
+const analisesPausadasAvisado = new Map(); // plataformaId → boolean
+
 // Estado de runtime de cada ativo em MEMÓRIA (V5_2_Plan.MD §2.2): o doc
 // `dados/estado` do ativo é escrito SÓ pelo bot (a dashboard apenas lê), então
 // o orquestrador o lê do Firestore UMA vez por boot e depois confia na cópia
@@ -302,9 +498,25 @@ const mercadoPersistido = new Map(); // plataformaId → 'aberto'|'fechado'
 // invalidar este mapa junto, ou o agendamento passa a usar dado velho.
 const estadoAtivos = new Map(); // `${plataformaId}/${ativoId}` → estado
 
+/**
+ * Última marca de "analisar agora" já atendida, por ativo (V8.16). O botão da
+ * dashboard grava um ISO em `analise_solicitada_em` no doc do ativo; o bot
+ * lembra AQUI qual marca já serviu, e por isso não precisa escrever nada para
+ * consumir o pedido — mesmo padrão do "atualizar inventário agora".
+ *
+ * Fica em memória de propósito: o doc do ativo passa pelo catálogo cacheado, e
+ * o pedido só chega ao bot junto do `catalogo_invalidado_em` que a dashboard
+ * grava no mesmo ato — marca que o loop confere ANTES da rodada, então o clique
+ * é atendido no mesmo tick em que o catálogo cai.
+ */
+const analisePedidaVista = new Map(); // `${plataformaId}/${ativoId}` → marca (ISO|null)
+
 /** Esvazia o estado em memória (testes — a persistência é recriada entre eles). */
 export function limparEstadoAtivosEmMemoria() {
   estadoAtivos.clear();
+  // O mapa de pedidos acompanha: `vista === undefined` faz o primeiro tick só
+  // ANOTAR, que é exatamente o comportamento certo depois de um reset.
+  analisePedidaVista.clear();
 }
 
 /**
@@ -331,6 +543,19 @@ export function limparEstadoAtivosEmMemoria() {
  * uma leitura extra por ativo a cada reinício.
  */
 export function deveLimparEstadoEmMemoria(marca, vista) {
+  return marcaMudou(marca, vista);
+}
+
+/**
+ * A MARCA mudou desde a última que este processo atendeu? É a régua de todo
+ * pedido que a dashboard manda por carona no `global/controle` (um ISO gravado
+ * num campo): invalidação do estado, "atualizar inventário agora" e, desde a
+ * V8.14, "a config mudou".
+ *
+ * `vista === undefined` é o PRIMEIRO tick do processo: apenas ANOTA, nunca age.
+ * Um pedido gravado ontem não pode ser reexecutado só porque o bot reiniciou.
+ */
+export function marcaMudou(marca, vista) {
   if (vista === undefined) return false;
   return (marca ?? null) !== (vista ?? null);
 }
@@ -400,6 +625,10 @@ export async function executarRodada({
 
     await verificarConexaoPlataforma(plataforma, api, conector);
 
+    // Contas espelho (V8.18, fase 1): só leitura de saldo. Nenhuma ordem sai
+    // daqui — as fases 2 a 4 do plano (ROADMAP, item 14) é que trazem isso.
+    await lerContasEspelho(plataforma);
+
     // Plataformas com INVENTÁRIO (hoje a Steam): o bot lê a lista de itens do
     // dono e publica o retrato para a dashboard, que não consegue ler a Steam
     // direto (sem CORS). O gate é a CAPACIDADE do conector, nunca o nome da
@@ -435,6 +664,25 @@ export async function executarRodada({
       if (noticiaNova) invalidarCatalogo();
     }
 
+    // ANÁLISES PAUSADAS (V8.16): o dono pausou o ANALISTA desta plataforma pela
+    // dashboard. Fica DEPOIS do inventário e das notícias de propósito — o que
+    // ele desligou foi a chamada de IA por item, não a leitura do mercado: os
+    // preços continuam atualizando na tela e a atualização do jogo continua
+    // chegando no Telegram. Para congelar a plataforma inteira existe
+    // `ativa: false`, e para parar TUDO existe a parada de emergência (§10).
+    // Campo genérico no doc da plataforma: o núcleo não conhece "STEAM".
+    if (plataforma.analises_pausadas === true) {
+      if (analisesPausadasAvisado.get(plataforma.id) !== true) {
+        log.aviso(`⏸ análises de ${plataforma.nome ?? plataforma.id} PAUSADAS pela dashboard — nenhuma chamada de IA nesta plataforma`);
+        analisesPausadasAvisado.set(plataforma.id, true);
+      }
+      continue;
+    }
+    if (analisesPausadasAvisado.get(plataforma.id) === true) {
+      log.info(`▶ análises de ${plataforma.nome ?? plataforma.id} retomadas`);
+      analisesPausadasAvisado.set(plataforma.id, false);
+    }
+
     const ativos = await ativosCache(plataforma.id);
     const ligados = ativos.filter((a) => a.config.ativo !== false);
 
@@ -458,7 +706,16 @@ export async function executarRodada({
         estado = await obterEstadoAtivo(plataforma.id, ativo.id);
         estadoAtivos.set(chaveEstado, estado);
       }
-      if (!deveAnalisarAgora({ config: ativo.config, estado, agora })) continue;
+      // "Analisar agora" (V8.16): o dono clicou na tela do ativo. A marca é
+      // ANOTADA antes de qualquer `continue` — deixá-la pendurada faria o
+      // pedido disparar sozinho num tick futuro, horas depois do clique.
+      const pedidoAnalise = ativo.analise_solicitada_em ?? null;
+      const pedidoDoDono = marcaMudou(pedidoAnalise, analisePedidaVista.get(chaveEstado));
+      analisePedidaVista.set(chaveEstado, pedidoAnalise);
+      if (pedidoDoDono) {
+        log.info(`[${plataforma.id}/${ativo.id}] análise imediata pedida pela dashboard — furando o intervalo e o filtro de variação`);
+      }
+      if (!pedidoDoDono && !deveAnalisarAgora({ config: ativo.config, estado, agora })) continue;
 
       try {
         const resultado = await executarCicloAtivo({
@@ -473,11 +730,31 @@ export async function executarRodada({
           // Saiu atualização do jogo nesta rodada: os ativos desta plataforma
           // analisam mesmo sem o preço ter se mexido (o preço se move DEPOIS
           // da notícia, e é justamente isso que se quer avaliar antes).
-          forcarAnalise: noticiaNova,
+          // O pedido manual do dono (V8.16) fura o mesmo filtro, pela mesma
+          // razão: ele clicou porque quer a leitura de AGORA, e o filtro
+          // devolveria "sem variação" e nenhuma análise.
+          forcarAnalise: noticiaNova || pedidoDoDono,
           ...(decidirFn ? { decidirFn } : {}),
         });
         if (resultado.estado) estadoAtivos.set(chaveEstado, resultado.estado);
-        resumo.push({ plataforma: plataforma.id, ativo: ativo.id, tipo: resultado.tipo });
+        // Ciclo bom apaga o recuo (V8.13): a próxima falha recomeça do fator 1.
+        if (estado.falha_ciclo) {
+          await salvarEstadoAtivo(plataforma.id, ativo.id, { falha_ciclo: null });
+          const emMemoria = estadoAtivos.get(chaveEstado);
+          if (emMemoria) estadoAtivos.set(chaveEstado, { ...emMemoria, falha_ciclo: null });
+        }
+        // Ciclo que VENDEU pelo Motor e ainda analisou a reentrada (V8.16)
+        // aparece com os dois nomes: "analise" sozinho esconderia a venda.
+        const rotuloSaida = resultado.saida_automatica?.motivo === 'TRAVA_DE_LUCRO'
+          ? 'trava_lucro'
+          : resultado.saida_automatica
+            ? 'stop_loss'
+            : null;
+        resumo.push({
+          plataforma: plataforma.id,
+          ativo: ativo.id,
+          tipo: rotuloSaida ? `${rotuloSaida}+${resultado.tipo}` : resultado.tipo,
+        });
       } catch (e) {
         // Falha de UM ativo nunca derruba a rodada (CLAUDE.md §3.1). O ciclo
         // pode ter gravado estado antes de falhar: descarta a cópia em memória
@@ -486,6 +763,17 @@ export async function executarRodada({
         estadoAtivos.delete(chaveEstado);
         log.erro(`[${plataforma.id}/${ativo.id}] ciclo falhou — pulando para o próximo ativo`, e);
         resumo.push({ plataforma: plataforma.id, ativo: ativo.id, tipo: 'erro' });
+        // RECUO (V8.13): sem isto o ativo volta a ser tentado no próximo tick,
+        // porque o ciclo quebrou antes de gravar qualquer carimbo de horário.
+        // Melhor esforço — falhar aqui não pode interromper a rodada.
+        try {
+          const consecutivas = (Number(estado.falha_ciclo?.consecutivas) || 0) + 1;
+          await salvarEstadoAtivo(plataforma.id, ativo.id, {
+            falha_ciclo: { em: agora.toISOString(), consecutivas, erro: String(e?.message ?? e).slice(0, 300) },
+          });
+        } catch (erroRegistro) {
+          log.aviso(`[${plataforma.id}/${ativo.id}] falha ao registrar o recuo do ciclo`, erroRegistro);
+        }
         // Cadeia de IA esgotada trava as análises até a quota renovar (meia-noite
         // do Pacífico) e se repetiria a cada ciclo de cada ativo — por isso a
         // chave do anti-spam é por PLATAFORMA, não por ativo.
@@ -511,10 +799,17 @@ export async function executarRodada({
 
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Comparativo de renda real × 106% do CDI (global/renda_real): recalculado a
-// cada 15 min no loop eterno — fora do executarRodada de propósito, para os
-// testes de rodada não dependerem de rede (Selic) nem do doc global.
-const RENDA_REAL_MS = 15 * 60_000;
+// Comparativo de renda real × 106% do CDI (global/renda_real): recalculado no
+// loop eterno — fora do executarRodada de propósito, para os testes de rodada
+// não dependerem de rede (Selic) nem do doc global.
+//
+// A CADA HORA, não a cada 15 min (V8.14): o recálculo varre as estatísticas de
+// TODOS os ativos nos DOIS modos (~40 leituras por passada), o que dava ~4 mil
+// leituras/dia para atualizar um comparativo que se move em ESCALA DE DIAS — o
+// CDI é uma taxa anual e o lucro só muda quando uma venda fecha. A cada hora
+// custa ~1 mil, e nenhuma decisão do robô depende deste número: ele é leitura
+// de acompanhamento. Mesma passada atualiza o câmbio (PTAX, publicada 1×/dia).
+const RENDA_REAL_MS = 60 * 60_000;
 let rendaRealAtualizadaEm = 0;
 
 // De quanto em quanto tempo o bot CONFERE se a supervisão semanal venceu (a
@@ -607,13 +902,21 @@ export async function iniciarOrquestrador() {
   // é montado no boot de qualquer forma, e reiniciar o bot não deve refazer um
   // pedido antigo).
   let inventarioPedidoVisto;
+  // Marca do último "a config mudou" já atendido (V8.14). Mesmo padrão do
+  // inventário: o primeiro tick só ANOTA, porque o catálogo acabou de nascer
+  // vazio no boot e não há nada velho para descartar.
+  let catalogoPedidoVisto;
   for (;;) {
-    // Parada de emergência (V6.2): lido FRESCO a cada tick (fora do catálogo —
-    // precisa ser responsivo), custo ~1 leitura/min. Travado → pula a rodada
-    // inteira (nenhuma análise, nenhuma ordem), mas o heartbeat segue vivo.
+    // Parada de emergência (V6.2): chega por LISTENER (V8.14 — `controleVivo`),
+    // fora do catálogo porque precisa ser responsivo. Antes eram ~1.440
+    // leituras/dia deste mesmo documento; agora é 1 ao anexar e 1 por mudança,
+    // com queda automática para leitura direta se o listener cair. Travado →
+    // pula a rodada inteira (nenhuma análise, nenhuma ordem), mas o heartbeat
+    // segue vivo.
     let travado = false;
     let pedidoSupervisao = false;
     let pedidoInventario;
+    let pedidoCatalogo;
     let modoVendas = null;
     let iaDesligada = false;
     // Só compara a marca de invalidação quando a LEITURA deu certo: falha de
@@ -621,7 +924,7 @@ export async function iniciarOrquestrador() {
     // ativos (o que custaria uma releitura por ativo por tick).
     let marcaInvalidacao;
     try {
-      const controle = await obterControle();
+      const controle = await lerControle();
       travado = controle?.operacao_travada === true;
       // Kill-switch da IA (V8.10), mesma carona: nenhuma leitura nova. Sem a
       // chave em uso não há análise nem ordem decidida pela IA — só as saídas
@@ -636,6 +939,12 @@ export async function iniciarOrquestrador() {
       // e por MARCA (um ISO) em vez de booleano: o bot não precisa escrever
       // nada para "consumir" o pedido — basta lembrar qual marca já viu.
       pedidoInventario = controle?.inventario_solicitado_em ?? null;
+      // "A config mudou", gravado pela dashboard ao salvar qualquer documento
+      // que o catálogo cacheia (V8.14). Existe porque o TTL subiu para 15 min
+      // para poupar leitura, e esperar 15 min por uma edição é ruim: com a
+      // marca, o dono salva e o bot obedece no próximo minuto. Custa ZERO
+      // leitura nova — pega a carona do controle, que já chega por listener.
+      pedidoCatalogo = controle?.catalogo_invalidado_em ?? null;
       // Liquidação (V8), mesma carona. Resolvido a cada tick porque a tolerância
       // do dia é função do relógio: virar o dia tem de mudar o número sem
       // ninguém reiniciar nada.
@@ -684,6 +993,18 @@ export async function iniciarOrquestrador() {
     if (pedidoInventario !== undefined) {
       forcarInventario = inventarioPedidoVisto !== undefined && pedidoInventario !== inventarioPedidoVisto;
       inventarioPedidoVisto = pedidoInventario;
+    }
+
+    // Config editada na dashboard: derruba o catálogo AGORA, em vez de esperar
+    // os 15 min do TTL. Fica fora do `if (!travado)` de propósito — quem trava a
+    // operação para ajustar a configuração quer que o ajuste esteja valendo
+    // quando destravar, não 15 min depois.
+    if (pedidoCatalogo !== undefined) {
+      if (marcaMudou(pedidoCatalogo, catalogoPedidoVisto)) {
+        invalidarCatalogo();
+        log.info('configuração editada na dashboard — catálogo descartado; a próxima rodada relê tudo');
+      }
+      catalogoPedidoVisto = pedidoCatalogo;
     }
 
     if (!travado) {

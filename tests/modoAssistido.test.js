@@ -237,6 +237,45 @@ function candlesSinteticos(n, precoFinal = 38) {
   return candles;
 }
 
+test('assistida: o stop do Motor vira RECOMENDAÇÃO e o ciclo PARA ali — sem análise de reentrada', async () => {
+  // V8.16: numa plataforma com API, a venda do Motor é executada e o ciclo
+  // segue para perguntar à IA se vale reentrar. Aqui não: a "venda" é só uma
+  // sugestão para o dono executar à mão, e a posição continua ABERTA. Analisar
+  // a reentrada de um lote que ninguém vendeu ainda empilharia uma segunda
+  // recomendação por cima da primeira, sobre a mesma posição.
+  await abrirPosicao({
+    plataforma: 'TORO', ativo: 'PETR4', modo: 'real', origem: 'manual',
+    quantidade: 100, preco_compra: 40, stop_loss: 38, stop_loss_motivo: 'fundo do mês',
+  });
+
+  let chamouIA = false;
+  const conector = {
+    id: 'toro',
+    precoAtual: async (par) => ({ simbolo: par, ultimo: 37, maxima: 39, minima: 37 }), // fura o chão
+    precos: async (pares) => Object.fromEntries(pares.map((p) => [p, { ultimo: 37 }])),
+    candles: async (par, res, n) => candlesSinteticos(n),
+    saldos: async () => ({ moeda: 'BRL', saldo_moeda: 1000, saldos: { PETR4: 100 } }),
+    ordensAbertas: async () => [],
+    ordemMercado: async () => { throw new Error('assistida nunca envia ordem'); },
+    aguardarFill: async () => { throw new Error('assistida não tem fill'); },
+  };
+
+  const resultado = await executarCicloAtivo({
+    plataforma: { id: 'TORO', assistida: true, moeda: 'BRL', modelos_ia: ['modelo-x'] },
+    api: { api_key_ia: 'chave' },
+    ativo: ATIVO,
+    ativosDaPlataforma: [ATIVO],
+    conector,
+    decidirFn: async () => { chamouIA = true; return { acao: 'AGUARDAR', percentual: 0, justificativa: 'T.', valida: true }; },
+  });
+
+  assert.equal(chamouIA, false, 'sem venda de verdade não há reentrada a decidir');
+  assert.equal(resultado.tipo, 'stop_loss');
+  assert.equal(resultado.operacao.status, 'sugerida');
+  const [posicao] = await obterPosicoesAbertasAtivo('TORO', 'PETR4', 'real');
+  assert.ok(posicao, 'a posição continua aberta: quem executa é o dono');
+});
+
 test('ciclo do ativo usa a resolução do MANIFEST (1d) e expira recomendação em AGUARDAR', async () => {
   const chamadasCandles = [];
   const conector = {

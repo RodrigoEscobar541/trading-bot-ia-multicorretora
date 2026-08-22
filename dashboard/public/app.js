@@ -21,6 +21,9 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { firebaseConfig, firestoreDatabaseId } from './firebase-config.js';
 import { estadoLimite, registrarFalha, mensagemErro, ESTADO_ZERADO } from './limiteLogin.js';
+import { somarOrcamentos, textoOrcamento } from './orcamentos.js';
+import { consolidarPatrimonio } from './patrimonio.js';
+import { estadoConexao, resumoConexao } from './conexaoStatus.js';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -101,6 +104,11 @@ const pctCdi = (v) =>
   v === null || v === undefined ? '—' : `${Number(v).toFixed(2).replace(/\.?0+$/, '')}%`;
 const dataHora = (iso) =>
   iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+// Dia solto ('YYYY-MM-DD') → 'DD/MM'. Fatiado na string de propósito: passar por
+// `new Date` trataria o dia como meia-noite UTC e mostraria o dia ANTERIOR no
+// fuso de Brasília.
+const dataDia = (dia) =>
+  typeof dia === 'string' && dia.length >= 10 ? `${dia.slice(8, 10)}/${dia.slice(5, 7)}` : '—';
 
 // --------------------------------------------------------------------- login
 // O freio de tentativas (limiteLogin.js) NÃO é defesa contra força bruta — ele
@@ -199,7 +207,6 @@ let statusBot = null; // doc global/status_bot (heartbeat do processo do bot)
 let controle = null; // doc global/controle (parada de emergência — V6.2)
 let cambio = null; // doc global/cambio (consolidação do patrimônio em BRL — V6.2)
 let configRenda = null; // doc global/config_renda (Selic/% do CDI manuais — V6.5)
-let relatorioDecisoes = null; // doc global/relatorio_decisoes (métricas das decisões — V7)
 let rendaModo = 'real'; // aba do comparativo × CDI: 'real' | 'simulacao'
 const cancelGlobais = [];
 const cancelPorPlataforma = new Map(); // plataformaId → [unsub...]
@@ -212,6 +219,31 @@ function cancelarTudo() {
   cancelTela.forEach((fn) => fn());
   cancelTela = [];
   plataformas.clear();
+}
+
+/**
+ * Avisa o BOT de que um documento de CONFIGURAÇÃO acabou de mudar (V8.14).
+ *
+ * O bot guarda plataformas, chaves, ativos e camadas do prompt num cache de 15
+ * min (`src/nucleo/catalogo.js`) — TTL alto de propósito, porque reler tudo a
+ * cada 5 min custava ~8 mil leituras/dia e a quota gratuita já estourou uma vez
+ * por causa disso. Sem este aviso, salvar uma config e esperar até 15 min seria
+ * o preço; com ele, o bot descarta o cache no próximo minuto.
+ *
+ * Grava uma MARCA (um ISO) em `global/controle`, o mesmo doc do "atualizar
+ * inventário agora" e da parada de emergência: nenhuma leitura nova no tick do
+ * bot, que já recebe esse documento por listener.
+ *
+ * MELHOR ESFORÇO: falhar aqui não pode transformar um "salvo ✓" em erro — a
+ * configuração JÁ foi gravada, e o TTL de 15 min continua sendo a rede de
+ * segurança. Por isso não lança e não é esperado por quem chama.
+ */
+function avisarConfigMudou() {
+  setDoc(
+    doc(db, 'global', 'controle'),
+    { catalogo_invalidado_em: new Date().toISOString() },
+    { merge: true },
+  ).catch(() => {});
 }
 
 const modoDoAtivo = (ativo) => (ativo?.config?.modo_simulacao === false ? 'real' : 'simulacao');
@@ -258,11 +290,6 @@ function assinarGlobais() {
     // nunca é exibido de volta na tela.
     onSnapshot(doc(db, 'global', 'telegram'), (snap) => {
       renderTelegram(snap.data() ?? null);
-    }),
-    // Relatório de decisões (V7): gerado pelo bot a cada 7 dias, só exibição.
-    onSnapshot(doc(db, 'global', 'relatorio_decisoes'), (snap) => {
-      relatorioDecisoes = snap.data() ?? null;
-      if (rota.tipo === 'geral') renderRelatorio(relatorioDecisoes);
     }),
     onSnapshot(collection(db, 'plataformas'), (snap) => {
       const idsAtuais = new Set(snap.docs.map((d) => d.id));
@@ -339,6 +366,8 @@ function aplicarRota() {
     rota = { tipo: 'ativo', plataforma: partes[1], ativo: partes[2] };
   } else if (partes[0] === 'plataforma' && partes[1]) {
     rota = { tipo: 'plataforma', plataforma: partes[1] };
+  } else if (partes[0] === 'parametros') {
+    rota = { tipo: 'parametros' };
   } else if (partes[0] === 'regras') {
     rota = { tipo: 'regras' };
   } else if (partes[0] === 'supervisao') {
@@ -352,21 +381,32 @@ function aplicarRota() {
   mostrarSecao('tela-geral', rota.tipo === 'geral');
   mostrarSecao('tela-ativo', rota.tipo === 'ativo');
   mostrarSecao('tela-plataforma', rota.tipo === 'plataforma');
+  mostrarSecao('tela-parametros', rota.tipo === 'parametros');
   mostrarSecao('tela-regras', rota.tipo === 'regras');
   mostrarSecao('tela-supervisao', rota.tipo === 'supervisao');
   mostrarSecao('tela-steam', rota.tipo === 'steam');
   fecharMenuMobile();
   assinarTela();
+  garantirSeriePatrimonio(); // fora da tela da plataforma, só cancela o que havia
   renderMenu();
   renderTudoDaRota();
 }
 window.addEventListener('hashchange', aplicarRota);
 
 /** Assinaturas específicas da tela atual (trocadas a cada navegação). */
-let telaDados = {}; // historico, operacoes, posicoes, prompt, contexto, api, template
+let telaDados = {}; // historico, operacoes, posicoes, prompt, contexto, api, template, contas
+// Contas espelho já assinadas nesta tela (V8.18) — a lista chega por snapshot,
+// e cada conta traz dois docs próprios.
+let contasAssinadas = new Set();
+let assinarDocsDasContas = () => {};
 function assinarTela() {
   cancelTela.forEach((fn) => fn());
   cancelTela = [];
+  contasAssinadas = new Set();
+  assinarDocsDasContas = () => {};
+  // A série do patrimônio da plataforma tem cancelamento próprio: ela é assinada
+  // por ATIVO e refeita quando a lista de ativos chega (que é depois da rota).
+  cancelarPatrimonio();
   telaDados = {};
   if (!auth.currentUser) return;
 
@@ -409,7 +449,60 @@ function assinarTela() {
         telaDados.template = snap.data() ?? null;
         renderTemplate();
       }),
+      // CONTAS ESPELHO (V8.18): a lista, e para cada uma o estado (saldo lido
+      // pelo bot) e o espelho mascarado das chaves. A `api` NUNCA é assinada —
+      // ela é só-escrita, e nem as rules deixariam.
+      onSnapshot(collection(db, 'plataformas', rota.plataforma, 'contas'), (snap) => {
+        const anteriores = new Map((telaDados.contas ?? []).map((c) => [c.id, c]));
+        telaDados.contas = snap.docs.map((d) => ({
+          id: d.id,
+          nome: d.data().nome ?? d.id,
+          ativa: d.data().ativa !== false,
+          modo_simulacao: d.data().modo_simulacao !== false,
+          estado: anteriores.get(d.id)?.estado ?? null,
+          apiMeta: anteriores.get(d.id)?.apiMeta ?? null,
+        }));
+        assinarDocsDasContas();
+        renderContas();
+      }),
     );
+    assinarDocsDasContas = () => {
+      // Re-assina o estado/api_meta de cada conta quando a lista muda. Os
+      // cancelamentos entram em `cancelTela`, que já é limpo na troca de tela.
+      for (const c of telaDados.contas ?? []) {
+        if (contasAssinadas.has(c.id)) continue;
+        contasAssinadas.add(c.id);
+        const base = ['plataformas', rota.plataforma, 'contas', c.id, 'dados'];
+        cancelTela.push(
+          onSnapshot(doc(db, ...base, 'estado'), (snap) => {
+            const alvo = (telaDados.contas ?? []).find((x) => x.id === c.id);
+            if (alvo) { alvo.estado = snap.data() ?? null; renderContas(); }
+          }),
+          onSnapshot(doc(db, ...base, 'api_meta'), (snap) => {
+            const alvo = (telaDados.contas ?? []).find((x) => x.id === c.id);
+            if (alvo) { alvo.apiMeta = snap.data()?.campos ?? null; renderContas(); }
+          }),
+        );
+        // Ordens sombra: uma coleção por (ativo, conta). Assina só os ativos que
+        // a plataforma tem — é a mesma lista que já está em memória.
+        telaDados.sombras ??= new Map();
+        for (const aid of plataformas.get(rota.plataforma)?.ativos.keys() ?? []) {
+          cancelTela.push(
+            onSnapshot(
+              query(
+                collection(db, 'plataformas', rota.plataforma, 'ativos', aid, 'contas', c.id, 'operacoes'),
+                orderBy('horario', 'desc'),
+                limit(10),
+              ),
+              (snap) => {
+                telaDados.sombras.set(`${aid}/${c.id}`, snap.docs.map((d) => d.data()));
+                renderSombras();
+              },
+            ),
+          );
+        }
+      }
+    };
   } else if (rota.tipo === 'regras') {
     cancelTela.push(
       onSnapshot(doc(db, 'global', 'regras_gerais'), (snap) => {
@@ -470,10 +563,7 @@ function renderTudoDaRota() {
   moedaTela = rota.plataforma
     ? plataformas.get(rota.plataforma)?.dados?.moeda ?? 'BRL'
     : 'BRL';
-  if (rota.tipo === 'geral') {
-    renderGeral();
-    renderRelatorio(relatorioDecisoes);
-  }
+  if (rota.tipo === 'geral') renderGeral();
   if (rota.tipo === 'ativo') {
     renderTiles();
     renderDecisao();
@@ -481,9 +571,16 @@ function renderTudoDaRota() {
     renderCiclo();
     renderPosicoes();
     renderGraficos();
-    renderConfigAtivo();
   }
-  if (rota.tipo === 'plataforma') renderPlataforma();
+  if (rota.tipo === 'plataforma') {
+    renderPlataforma();
+    montarCamposContaApi(plataformas.get(rota.plataforma)?.dados?.conector);
+    renderContas();
+    renderSombras();
+    garantirSeriePatrimonio();
+    renderPatrimonioPlataforma();
+  }
+  if (rota.tipo === 'parametros') renderParametros();
   if (rota.tipo === 'steam') {
     renderSteam();
     renderSteamConfig();
@@ -513,6 +610,7 @@ function renderMenu() {
   };
 
   nav.append(link('Visão geral', '#/geral', rota.tipo === 'geral'));
+  nav.append(link('⚙ Parâmetros', '#/parametros', rota.tipo === 'parametros'));
   nav.append(link('🧠 Regras gerais da IA', '#/regras', rota.tipo === 'regras'));
   nav.append(link('🧭 Supervisão semanal', '#/supervisao', rota.tipo === 'supervisao'));
   // A Steam só aparece no menu depois de semeada pelo bot.
@@ -523,9 +621,15 @@ function renderMenu() {
   for (const [pid, p] of plataformas) {
     // A Steam tem tela própria (acima) — não entra na lista de plataformas.
     if (pid === PLATAFORMA_STEAM) continue;
-    const grupo = document.createElement('div');
-    grupo.className = 'menu-grupo';
+    // O NOME da plataforma é o caminho para a tela dela (V8.16). Antes havia um
+    // "⚙ Plataforma e template" no fim de cada bloco: dois itens para o mesmo
+    // lugar, e o de baixo ficava colado no primeiro ativo da plataforma
+    // SEGUINTE, que é onde o olho errava.
+    const grupo = document.createElement('a');
+    grupo.href = `#/plataforma/${pid}`;
+    grupo.className = `menu-grupo menu-grupo-link${rota.tipo === 'plataforma' && rota.plataforma === pid ? ' ativo' : ''}`;
     grupo.textContent = p.dados?.nome || pid;
+    grupo.title = 'Abrir a configuração e o template desta plataforma';
     nav.append(grupo);
 
     const ordenados = [...p.ativos.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -543,7 +647,6 @@ function renderMenu() {
         ),
       );
     }
-    nav.append(link('⚙ Plataforma e template', `#/plataforma/${pid}`, rota.tipo === 'plataforma' && rota.plataforma === pid));
   }
 }
 
@@ -565,6 +668,9 @@ function renderTitulo() {
     } else badge.hidden = true;
   } else if (rota.tipo === 'plataforma') {
     $('titulo-tela').textContent = `Plataforma ${plataformas.get(rota.plataforma)?.dados?.nome || rota.plataforma}`;
+    badge.hidden = true;
+  } else if (rota.tipo === 'parametros') {
+    $('titulo-tela').textContent = 'Parâmetros dos ativos';
     badge.hidden = true;
   } else if (rota.tipo === 'regras') {
     $('titulo-tela').textContent = 'Regras gerais da IA';
@@ -730,9 +836,10 @@ $('botao-ia').addEventListener('click', async () => {
 // ------------------------------------------- corte rápido dos avisos (V8.10)
 // É o MESMO interruptor do card "Avisos no Telegram" (global/telegram.ativo),
 // só que ao alcance da mão junto dos outros cortes. Nenhum toggle de evento é
-// tocado: religar devolve exatamente a configuração de antes. Vale em até 5 min
-// — a config do Telegram é lida pelo catálogo cacheado, e furar esse cache por
-// um botão custaria leitura no tick de 1 minuto.
+// tocado: religar devolve exatamente a configuração de antes. Vale no próximo
+// minuto: a config do Telegram é lida pelo catálogo cacheado, mas a dashboard
+// avisa o bot pela marca em `global/controle` (V8.14), que derruba o catálogo
+// na hora — e sem custar leitura nova no tick.
 function renderControleAvisos() {
   const configurado = telegramSalvo?.token_configurado === true && Boolean(telegramSalvo?.chat_id);
   const desligados = !configurado || telegramSalvo?.ativo === false;
@@ -750,7 +857,7 @@ function renderControleAvisos() {
         ? 'Os avisos estão DESLIGADOS: o robô continua analisando e operando, mas não te manda nada. '
           + 'Suas escolhas de quais eventos avisar foram preservadas.'
         : 'O robô para de mandar mensagens no Telegram. Nada mais muda: ele continua analisando e '
-          + 'operando normalmente. Vale em até 5 minutos.';
+          + 'operando normalmente. Vale no próximo minuto.';
   }
   const banner = $('banner-avisos');
   if (banner) {
@@ -766,7 +873,7 @@ $('botao-avisos').addEventListener('click', async () => {
   const msg = desligados
     ? 'Religar os avisos no Telegram?'
     : 'DESLIGAR os avisos no Telegram?\n\nO robô continua analisando e operando — você é que deixa de '
-      + 'ser avisado, inclusive sobre problemas.\n\nVale em até 5 minutos.';
+      + 'ser avisado, inclusive sobre problemas.\n\nVale no próximo minuto.';
   if (!confirm(msg)) return;
   try {
     await setDoc(
@@ -774,6 +881,7 @@ $('botao-avisos').addEventListener('click', async () => {
       { ativo: desligados, atualizado_em: new Date().toISOString() },
       { merge: true },
     );
+    avisarConfigMudou();
   } catch (e) {
     alert(`Falha ao ${desligados ? 'religar' : 'desligar'} os avisos: ${e.code ?? e.message}`);
   }
@@ -888,15 +996,15 @@ function renderGeral() {
   renderModoVendas();
   const corpo = $('tabela-geral-ativos').tBodies[0];
   corpo.textContent = '';
-  // Patrimônio consolidado POR MOEDA: moedas diferentes (BRL do MB, USD da
-  // Tastytrade) nunca se somam — cada uma aparece com o próprio símbolo.
-  const porMoeda = new Map(); // moeda → { caixa, posicoes, naoRealizado, caixaEm }
-
   for (const [pid, p] of plataformas) {
-    const moedaP = p.dados?.moeda ?? 'BRL';
-    if (!porMoeda.has(moedaP)) porMoeda.set(moedaP, { caixa: null, posicoes: 0, naoRealizado: 0, caixaEm: '' });
-    const acumulado = porMoeda.get(moedaP);
+    // A Steam fica FORA desta tabela e do patrimônio: ela tem tela própria, e o
+    // dinheiro dela é carteira de jogo — não dá para sacar, então misturá-lo ao
+    // patrimônio (ainda que numa linha só dela) daria a impressão de dinheiro
+    // disponível. Um inventário de dezenas de skins também afogaria os ativos
+    // financeiros, que é o que esta tela existe para mostrar.
+    if (pid === PLATAFORMA_STEAM) continue;
 
+    const moedaP = p.dados?.moeda ?? 'BRL';
     const ordenados = [...p.ativos.entries()].sort(([a], [b]) => a.localeCompare(b));
     if (ordenados.length === 0) continue;
 
@@ -915,19 +1023,10 @@ function renderGeral() {
       const decisao = leve?.estado?.ultima_decisao_ia ?? null;
       const ligado = ativo.config?.ativo !== false;
 
-      // Caixa é POR PLATAFORMA (mesmo valor em todos os ativos dela): vale o
-      // snapshot mais recente. Posições somam por ativo.
-      if (carteira?.saldo_moeda != null && String(carteira.atualizada_em ?? '') >= acumulado.caixaEm) {
-        acumulado.caixa = carteira.saldo_moeda;
-        acumulado.caixaEm = String(carteira.atualizada_em ?? '');
-      }
-      if (carteira?.saldo_ativo != null && carteira?.preco_atual != null) {
-        acumulado.posicoes += carteira.saldo_ativo * carteira.preco_atual;
-      }
-      // Lucro/prejuízo se vender tudo agora (líquido de taxas), já calculado
-      // pelo bot por lote (fórmula canônica §4) e agregado no doc dashboard.
+      // O total lá de cima é somado por `consolidarPatrimonio` (patrimonio.js),
+      // que só conta carteira REAL. Aqui a tabela mostra TODOS os ativos, com o
+      // selo do modo de cada um — é o lugar certo para a simulação aparecer.
       const naoRealizado = carteira?.lucro_nao_realizado ?? null;
-      if (naoRealizado != null) acumulado.naoRealizado += naoRealizado;
 
       const linha = corpo.insertRow();
       // Ativo desligado é contexto, não notícia: fica esmaecido para o olho
@@ -972,29 +1071,16 @@ function renderGeral() {
   // Hero: UM total consolidado em BRL (V6.2). Moedas estrangeiras são
   // convertidas pelo câmbio do BCB (doc global/cambio, só exibição). Sem
   // cotação para alguma moeda com saldo, ela fica de fora e avisamos.
-  const fatorBRL = (moeda) => (moeda === 'BRL' ? 1 : cambio?.[moeda]?.para_brl ?? null);
-  let patrimonioBRL = 0;
-  let caixaBRL = 0;
-  let naoRealizadoBRL = 0;
-  let temDados = false;
-  const semCambio = [];
-  for (const [moeda, { caixa, posicoes, naoRealizado }] of porMoeda) {
-    if (caixa === null && posicoes === 0) continue;
-    const fator = fatorBRL(moeda);
-    if (fator === null) {
-      semCambio.push(moeda);
-      continue;
-    }
-    temDados = true;
-    patrimonioBRL += ((caixa ?? 0) + posicoes) * fator;
-    if (caixa !== null) caixaBRL += caixa * fator;
-    naoRealizadoBRL += naoRealizado * fator;
-  }
+  const { patrimonioBRL, caixaBRL, naoRealizadoBRL, temDados, semCambio } = consolidarPatrimonio({
+    plataformas,
+    cambio,
+    excluir: [PLATAFORMA_STEAM],
+  });
   $('geral-patrimonio').textContent = temDados ? dinheiro(patrimonioBRL, 'BRL') : '—';
   const partesCaixa = [];
   if (temDados) partesCaixa.push(`caixa disponível: ${dinheiro(caixaBRL, 'BRL')}`);
   if (cambio?.USD?.para_brl) partesCaixa.push(`US$ a ${dinheiro(cambio.USD.para_brl, 'BRL')}`);
-  if (semCambio.length > 0) partesCaixa.push(`⚠️ ${semCambio.join(', ')} fora do total (sem câmbio)`);
+  if (semCambio.size > 0) partesCaixa.push(`⚠️ ${[...semCambio].join(', ')} fora do total (sem câmbio)`);
   $('geral-caixa').textContent = partesCaixa.join(' · ');
 
   // Se vender tudo agora: lucro/prejuízo não realizado consolidado em BRL.
@@ -1084,8 +1170,14 @@ function renderRendaReal() {
   const bot = comp.bot ?? {};
   const bench = comp.benchmark ?? {};
 
+  // Moeda SEM cotação não entra nesta linha. Ela já fica de fora do total (o
+  // bot não chuta câmbio) e a carteira Steam é o caso real disso: exibi-la ao
+  // lado de R$ e US$ num card que compara com o CDI sugeriria dinheiro
+  // aplicável, e ela nem sacar dá. A régua é o próprio aviso do bot — nada de
+  // `if` por nome de plataforma aqui.
+  const semCambio = new Set(bloco.moedas_sem_cambio ?? []);
   const lucros = Object.entries(bloco.lucro_real_por_moeda ?? {})
-    .filter(([, v]) => v != null)
+    .filter(([m, v]) => v != null && !semCambio.has(m))
     .map(([m, v]) => dinheiro(v, m));
   intro.textContent = `${ehSim ? 'Lucro simulado (só ativos em simulação)' : 'Lucro realizado (só ativos em modo real)'}: ${lucros.length > 0 ? lucros.join(' · ') : dinheiro(0, moeda)}`;
 
@@ -1114,10 +1206,25 @@ function renderRendaReal() {
     `Selic ${pct(selic.taxa_aa)} a.a. (${FONTES_SELIC[selic.fonte] ?? selic.fonte ?? '—'})`,
     `CDI ≈ ${pct(selic.cdi_aa)} → ${pctCdi(selic.percentual_cdi ?? 106)} do CDI = ${pct(selic.benchmark_aa)} a.a.`,
     bloco.patrimonio_inicial != null
-      ? `principal considerado: ${dinheiro(bloco.patrimonio_inicial, moeda)}`
+      ? `principal considerado: ${dinheiro(bloco.patrimonio_inicial, moeda)}${detalhePrincipal(bloco)}`
       : `os % do robô aparecem após a primeira análise em modo ${ehSim ? 'simulação' : 'real'} (principal ainda desconhecido)`,
   ];
   rodape.textContent = `${partes.join(' · ')} · atualizado em ${dataHora(rendaReal.atualizado_em)}`;
+}
+
+// De onde saiu o principal: quais carteiras entraram na soma e quando foram
+// medidas. É a resposta, na tela, para "esse % está dividindo por qual dinheiro?"
+// — o principal é só o patrimônio dos ativos DAQUELE modo, nunca o do outro.
+// `fora` são plataformas do modo que não entraram (sem referência ainda, medida
+// sob a regra antiga, ou moeda sem cotação): o principal é parcial e diz isso.
+function detalhePrincipal(bloco) {
+  const dentro = bloco.patrimonio_inicial_plataformas ?? [];
+  const fora = bloco.patrimonio_inicial_fora ?? [];
+  const partes = [];
+  if (dentro.length > 0) partes.push(dentro.join(' + '));
+  if (bloco.patrimonio_inicial_medido_em) partes.push(`medido em ${dataDia(bloco.patrimonio_inicial_medido_em)}`);
+  if (fora.length > 0) partes.push(`fora: ${fora.join(', ')}`);
+  return partes.length > 0 ? ` (${partes.join(' · ')})` : '';
 }
 
 // Alterna a aba Real/Simulação do comparativo × CDI (V6.2).
@@ -1157,112 +1264,11 @@ $('form-config-renda').addEventListener('submit', async (ev) => {
       { merge: true },
     );
     const selicTxt = selic === null ? 'Selic pela API do BCB' : `Selic ${pct(selic)}`;
-    msg.textContent = `Salvo: ${selicTxt} · ${pctCdi(cdi)} do CDI. O bot aplica na próxima rodada (até ~15 min).`;
+    msg.textContent = `Salvo: ${selicTxt} · ${pctCdi(cdi)} do CDI. O bot aplica no próximo recálculo (até ~1 h).`;
   } catch (e) {
     msg.textContent = `Falha ao salvar: ${e.code ?? e.message}`;
   }
 });
-
-// -------------------------------------------------- relatório de decisões
-// Só exibição: tudo já vem calculado pelo bot (global/relatorio_decisoes).
-
-const NOME_FECHAMENTO = {
-  lucro: 'Realização (IA)',
-  stop_loss: 'Stop-loss (Motor)',
-  manual: 'Registro manual',
-  externa: 'Saída externa',
-};
-
-function renderRelatorio(rel) {
-  const cartao = $('cartao-relatorio');
-  if (!cartao) return;
-  if (!rel || !rel.janela) { cartao.hidden = true; return; }
-  cartao.hidden = false;
-  $('relatorio-janela').textContent =
-    `${dataHora(rel.janela.inicio)} → ${dataHora(rel.janela.fim)}`;
-
-  const corpo = $('relatorio-corpo');
-  corpo.textContent = '';
-  const bloco = (titulo) => {
-    const h = document.createElement('h3');
-    h.className = 'relatorio-titulo';
-    h.textContent = titulo;
-    corpo.append(h);
-  };
-  const linha = (rotulo, valor, classe = '') => {
-    const div = document.createElement('div');
-    div.className = 'relatorio-linha';
-    const a = document.createElement('span');
-    a.textContent = rotulo;
-    const b = document.createElement('span');
-    b.textContent = valor;
-    if (classe) b.className = classe;
-    div.append(a, b);
-    corpo.append(div);
-  };
-
-  const d = rel.decisoes ?? {};
-  if (d.total > 0) {
-    bloco('Decisões da IA');
-    linha('Análises no período', String(d.total));
-    linha('Comprar / Vender / Aguardar', `${d.COMPRAR} / ${d.VENDER} / ${d.AGUARDAR}`);
-    linha('Agiu em', `${(((d.COMPRAR + d.VENDER) / d.total) * 100).toFixed(1)}% das análises`);
-  }
-
-  const fech = Object.entries(rel.fechamentos ?? {}).filter(([, b]) => b.n > 0);
-  bloco('Posições fechadas');
-  if (fech.length === 0) linha('Nenhuma no período', '—');
-  for (const [motivo, b] of fech) {
-    linha(
-      NOME_FECHAMENTO[motivo] ?? motivo,
-      `${b.n} — ${b.positivas} no lucro, ${b.negativas} no prejuízo`,
-      b.negativas > b.positivas ? 'valor-negativo' : 'valor-positivo',
-    );
-  }
-
-  const moedas = Object.entries(rel.por_moeda ?? {});
-  if (moedas.length) {
-    bloco('Resultado realizado');
-    for (const [moeda, m] of moedas) {
-      linha(`Lucro (${moeda})`, dinheiro(m.lucro_realizado, moeda),
-        m.lucro_realizado >= 0 ? 'valor-positivo' : 'valor-negativo');
-      linha(`Taxas pagas (${moeda})`, dinheiro(m.taxas_pagas, moeda));
-    }
-  }
-
-  // Assimetria (V6.7): ANTES do risco:retorno porque responde com o dado que
-  // todo lote fechado tem. O R:R é a métrica melhor, mas depende de um campo que
-  // os lotes anteriores à V6.6.2 não carregam.
-  for (const [moeda, m] of moedas) {
-    const a = m.assimetria;
-    if (!a || !a.n) continue;
-    bloco(`Assimetria — ${moeda}`);
-    linha('Ganhos', `${a.ganhos} · média ${a.ganho_medio === null ? '—' : dinheiro(a.ganho_medio, moeda)}`
-      + (a.maior_ganho === null ? '' : ` · maior ${dinheiro(a.maior_ganho, moeda)}`), 'valor-positivo');
-    linha('Perdas', `${a.perdas} · média ${a.perda_media === null ? '—' : dinheiro(a.perda_media, moeda)}`
-      + (a.maior_perda === null ? '' : ` · pior ${dinheiro(a.maior_perda, moeda)}`), 'valor-negativo');
-    if (a.razao !== null) {
-      linha('Ganho médio ÷ perda média', `${a.razao.toFixed(2)}×`,
-        a.razao >= 1 ? 'valor-positivo' : 'valor-negativo');
-    }
-    linha('Taxa de acerto', `${(a.taxa_acerto * 100).toFixed(1)}%`);
-    // A esperança é o juiz: acerto alto com esperança negativa é o quadro que a
-    // taxa de acerto sozinha esconde.
-    linha('Resultado por lote', dinheiro(a.esperanca, moeda),
-      a.esperanca >= 0 ? 'valor-positivo' : 'valor-negativo');
-  }
-
-  bloco('Risco:retorno realizado');
-  const rr = rel.rr ?? {};
-  if (rr.amostras > 0) {
-    linha('Mediana', `${rr.mediana.toFixed(2)}×`, rr.mediana >= 1 ? 'valor-positivo' : 'valor-negativo');
-    linha('Média', `${rr.media.toFixed(2)}×`);
-    linha('Melhor / pior', `${rr.melhor.toFixed(2)}× / ${rr.pior.toFixed(2)}×`);
-    linha('Lotes na amostra', String(rr.amostras));
-  } else {
-    linha('Sem amostra', 'o chão inicial só é gravado desde a V6.6.2 — lotes abertos antes não entram');
-  }
-}
 
 // ------------------------------------------------------- avisos no Telegram
 // O doc `global/telegram` guarda token, chat id e os toggles de evento. O token
@@ -1357,9 +1363,10 @@ $('form-telegram').addEventListener('submit', async (ev) => {
     // branco não escreve nada — preserva o token já gravado.
     if (token) await setDoc(doc(db, 'global', 'telegram_token'), { bot_token: token }, { merge: true });
     await setDoc(doc(db, 'global', 'telegram'), dados, { merge: true });
+    avisarConfigMudou();
     $('tg-token').value = '';
     msg.textContent = ligado
-      ? 'Salvo. Em até 5 minutos você deve receber uma mensagem de confirmação no Telegram.'
+      ? 'Salvo. Em até um minuto você deve receber uma mensagem de confirmação no Telegram.'
       : 'Salvo. Avisos desligados.';
   } catch (e) {
     msg.textContent = `Falha ao salvar: ${e.code ?? e.message}`;
@@ -1447,6 +1454,11 @@ function renderAssistido() {
   if (rec.quantidade != null) partes.push(`${qtd(rec.quantidade)} unidades`);
   if (rec.valor != null) partes.push(`≈ ${dinheiro(rec.valor)}`);
   if (rec.preco != null) partes.push(`ao preço de referência ${dinheiro(rec.preco)}`);
+  // ALERTA DE OPORTUNIDADE (V8.22, §10.12): a compra vem SEM tamanho — o robô
+  // não sabe quanto há em caixa na corretora. O que ele sugere é a FATIA.
+  if (rec.quantidade == null && rec.valor == null && rec.percentual_sugerido != null) {
+    partes.push(`fatia sugerida ${rec.percentual_sugerido}% do que você quiser alocar`);
+  }
   $('recomendacao-acao').textContent = `${verbo === 'COMPRAR' ? '↑' : '↓'} ${verbo} ${rota.ativo}`;
   $('recomendacao-detalhe').textContent =
     `${partes.join(' · ')}${rec.justificativa ? ` — ${rec.justificativa}` : ''}`;
@@ -1547,9 +1559,8 @@ function renderGraficos() {
   // grandezas diferentes. Entradas antigas sem `modo` são da fase simulação.
   const modo = modoDoAtivo(ativo);
   const doModo = historico.filter((h) => h.tipo === 'analise' && (h.modo ?? 'simulacao') === modo);
-  const pontosPatrimonio = doModo
-    .map((h) => ({ x: new Date(h.horario), y: h.patrimonio_plataforma ?? h.patrimonio }))
-    .filter((p) => Number.isFinite(p.y));
+  // O PATRIMÔNIO não é do ativo, é da plataforma: desde a V8.16 ele é desenhado
+  // na tela da plataforma, juntando o histórico de todos os ativos dela.
   const pontosLucro = doModo
     .map((h) => ({ x: new Date(h.horario), y: h.lucro_total }))
     .filter((p) => Number.isFinite(p.y));
@@ -1581,10 +1592,8 @@ function renderGraficos() {
     }));
 
   desenharLinha($('grafico-preco'), pontosPreco, 'var(--serie-preco)', marcadores);
-  desenharLinha($('grafico-patrimonio'), pontosPatrimonio, 'var(--serie-patrimonio)');
   desenharLinha($('grafico-lucro'), pontosLucro, 'var(--serie-lucro)');
   preencherTabelaDados($('tabela-preco'), pontosPreco);
-  preencherTabelaDados($('tabela-patrimonio'), pontosPatrimonio);
   preencherTabelaDados($('tabela-lucro'), pontosLucro);
 }
 
@@ -1915,9 +1924,14 @@ function preencherTabelaDados(tabela, pontos) {
 }
 
 // ----------------------------------------------------------------- operações
+const OPERACOES_NA_TABELA = 10;
+
 function renderOperacoes() {
   if (rota.tipo !== 'ativo') return;
-  const ops = telaDados.operacoes ?? [];
+  // A assinatura traz 50 porque o GRÁFICO de preço marca cada uma delas; a
+  // tabela mostra só as 10 mais recentes — o resto era poluição, e ninguém
+  // rolava 50 linhas para reler uma operação de duas semanas atrás.
+  const ops = (telaDados.operacoes ?? []).slice(0, OPERACOES_NA_TABELA);
   const corpo = $('tabela-operacoes').tBodies[0];
   corpo.textContent = '';
   $('operacoes-vazio').hidden = ops.length > 0;
@@ -2047,86 +2061,667 @@ function renderPosicoes() {
   }
 }
 
-// ------------------------------------------------- configurações do ativo
-let configAtivoEditando = false;
-$('form-config-ativo').addEventListener('focusin', () => { configAtivoEditando = true; });
-$('form-config-ativo').addEventListener('focusout', () => { configAtivoEditando = false; });
+// ------------------------------------ parâmetros de TODOS os ativos (V8.16)
+// Uma tabela com uma linha por ativo e uma coluna por parâmetro, na mesma ordem
+// da Visão geral. Substituiu o formulário "Configurações do ativo", que vivia na
+// tela de cada ativo: equilibrar orçamento, folga do stop e trava de lucro é
+// decisão ENTRE ativos, e um formulário por tela obrigava a decorar o número de
+// um para digitar o do outro.
+//
+// Duas regras que o formulário antigo não tinha:
+//   - só o que MUDOU é gravado (merge por campo). Ativo que nunca teve
+//     `trava_lucro_gatilho_percentual` não ganha um só por aparecer na tabela —
+//     o que a coluna mostra nesse caso é o padrão do Motor, não um valor dele.
+//   - nada é salvo por engano: a célula mexida fica destacada e a gravação só
+//     acontece no botão.
+//
+// (O formulário antigo tinha um defeito que morreu com ele: os dois campos da
+// trava de lucro eram exibidos e nunca gravados — o objeto do submit não os
+// incluía, então editá-los na tela não mudava nada no robô.)
+const COLUNAS_PARAMETROS = [
+  {
+    chave: 'ativo', rotulo: 'Ligado', tipo: 'bool', padrao: true,
+    titulo: 'O robô analisa e opera este ativo',
+  },
+  {
+    chave: 'modo_simulacao', rotulo: 'Simulação', tipo: 'bool', padrao: true,
+    titulo: 'Marcado = ordens fictícias. DESMARCADO = ordens REAIS na plataforma',
+  },
+  {
+    chave: 'tempo_entre_analises_minutos', rotulo: 'Análise (min)', padrao: 15, min: 1, step: 1,
+    titulo: 'De quanto em quanto tempo o robô olha este ativo',
+  },
+  {
+    chave: 'percentual_minimo_variacao', rotulo: 'Var. mín. (%)', padrao: 0.3, min: 0, step: 0.01,
+    titulo: 'Quanto o preço precisa ter andado desde a última análise para valer a pena chamar a IA de novo',
+  },
+  {
+    chave: 'percentual_max_diferenca_execucao', rotulo: 'Diverg. máx. (%)', padrao: 1, min: 0, step: 0.1,
+    titulo: 'Diferença máxima aceita entre o preço que a IA analisou e o preço na hora de executar',
+  },
+  {
+    chave: 'tempo_reset_dias', rotulo: 'Reset (dias)', padrao: 7, min: 1, step: 1,
+    titulo: 'Sem nenhuma operação por este tempo, a IA recebe o sinal de recomeçar a análise do zero',
+  },
+  {
+    chave: 'taxa_compra_percentual', rotulo: 'Taxa compra (%)', padrao: 1.5, min: 0, step: 0.01,
+    titulo: 'Taxa que a plataforma cobra na compra — entra no cálculo do preço mínimo de venda lucrativa',
+  },
+  {
+    chave: 'taxa_venda_percentual', rotulo: 'Taxa venda (%)', padrao: 1.5, min: 0, step: 0.01,
+    titulo: 'Taxa que a plataforma cobra na venda — entra no cálculo do lucro líquido',
+  },
+  {
+    chave: 'limite_perda_diaria_percentual', rotulo: 'Perda diária (%)', padrao: 3, min: 0, step: 0.1,
+    titulo: 'Queda do patrimônio da plataforma no dia que bloqueia compras novas. 0 desativa',
+  },
+  {
+    chave: 'orcamento_percentual', rotulo: 'Orçamento (%)', padrao: 100, min: 0, max: 100, step: 1,
+    titulo: 'Fatia do patrimônio da plataforma que este ativo pode ocupar (por modo)',
+  },
+  {
+    chave: 'stop_loss_max_distancia_percentual', rotulo: 'Stop dist. máx. (%)', padrao: 15, min: 0.1, max: 90, step: 0.5,
+    titulo: 'O chão mais longe do preço que a IA pode pedir na compra',
+  },
+  {
+    chave: 'stop_loss_trailing_percentual', rotulo: 'Folga do stop (%)', padrao: 2, min: 0.1, max: 50, step: 0.1,
+    titulo: 'Distância MÍNIMA entre o preço e o chão, e a distância em que o robô sobe o chão sozinho quando a posição está em lucro. Chão que a IA peça mais perto que isso é recusado',
+  },
+  {
+    chave: 'trava_lucro_gatilho_percentual', rotulo: 'Trava gatilho (%)', padrao: 1, min: 0, max: 50, step: 0.1,
+    titulo: 'Quanto a posição precisa subir acima do ponto de empate para o robô armar a trava de lucro. 0 desliga a trava neste ativo',
+  },
+  {
+    chave: 'trava_lucro_devolucao_percentual', rotulo: 'Trava devol. (%)', padrao: 0.8, min: 0, max: 50, step: 0.1,
+    titulo: 'Quanto do TOPO da posição o robô aceita devolver antes de vender e realizar o lucro. Menor = realiza mais cedo e mais vezes',
+  },
+  {
+    chave: 'minimo_ordem_valor', rotulo: 'Ordem mín. (valor)', padrao: 10, min: 0, step: 0.01,
+    titulo: 'Menor valor de ordem aceito pela plataforma, na moeda dela',
+  },
+  {
+    chave: 'minimo_ordem_quantidade', rotulo: 'Ordem mín. (qtd)', padrao: 0.00001, min: 0, step: 0.00000001,
+    titulo: 'Menor quantidade de ordem aceita pela plataforma',
+  },
+];
 
-function renderConfigAtivo() {
-  renderSomaOrcamento(); // reflete mudanças de orçamento de outros ativos também
-  if (configAtivoEditando) return; // não sobrescrever enquanto o usuário edita
-  const config = ativoSelecionado()?.config;
-  if (!config) return;
-  $('cfg-ativo-ligado').checked = config.ativo !== false;
-  $('cfg-modo-simulacao').checked = config.modo_simulacao !== false;
-  $('cfg-tempo-analises').value = config.tempo_entre_analises_minutos ?? 15;
-  $('cfg-variacao-minima').value = config.percentual_minimo_variacao ?? 0.3;
-  $('cfg-divergencia-max').value = config.percentual_max_diferenca_execucao ?? 1.0;
-  $('cfg-tempo-reset').value = config.tempo_reset_dias ?? 7;
-  $('cfg-taxa-compra').value = config.taxa_compra_percentual ?? 1.5;
-  $('cfg-taxa-venda').value = config.taxa_venda_percentual ?? 1.5;
-  $('cfg-limite-perda').value = config.limite_perda_diaria_percentual ?? 3;
-  $('cfg-orcamento').value = config.orcamento_percentual ?? 100;
-  $('cfg-stop-distancia').value = config.stop_loss_max_distancia_percentual ?? 15;
-  $('cfg-stop-trailing').value = config.stop_loss_trailing_percentual ?? 2;
-  $('cfg-trava-gatilho').value = config.trava_lucro_gatilho_percentual ?? 1;
-  $('cfg-trava-devolucao').value = config.trava_lucro_devolucao_percentual ?? 0.8;
-  $('cfg-min-valor').value = config.minimo_ordem_valor ?? 10;
-  $('cfg-min-qtd').value = config.minimo_ordem_quantidade ?? 0.00001;
-  renderSomaOrcamento(); // agora com o valor do campo já preenchido
+// Ativos com alteração pendente: `plataforma/ativo` → Map(coluna → valor novo).
+// Enquanto tiver alguém aqui dentro, o render NÃO reescreve a tabela — senão um
+// snapshot do Firestore apagaria o que está sendo digitado.
+const parametrosPendentes = new Map();
+
+const chaveAtivo = (pid, aid) => `${pid}/${aid}`;
+
+/** Valor em vigor de uma coluna: o do ativo ou, na falta dele, o padrão. */
+function valorParametro(config, coluna) {
+  const v = config?.[coluna.chave];
+  if (coluna.tipo === 'bool') return v === undefined ? coluna.padrao : v !== false;
+  return v === undefined || v === null ? coluna.padrao : v;
 }
 
-// Soma dos orçamentos de TODOS os ativos da plataforma (usando o valor sendo
-// digitado para o ativo atual). Acima de 100% fica em vermelho — mas o
-// usuário ainda consegue salvar; é só um aviso de "há orçamento a reequilibrar".
-function renderSomaOrcamento() {
-  if (rota.tipo !== 'ativo') return;
-  const el = $('cfg-orcamento-soma');
-  const p = plataformas.get(rota.plataforma);
-  if (!el || !p) return;
-  const digitado = Number($('cfg-orcamento').value);
-  let soma = 0;
-  for (const [aid, a] of p.ativos) {
-    const orc = aid === rota.ativo && Number.isFinite(digitado)
-      ? digitado
-      : Number(a.config?.orcamento_percentual ?? 0);
-    soma += Number.isFinite(orc) ? orc : 0;
+/** Linhas da tabela na ordem da Visão geral: por plataforma, ativo A→Z. */
+function linhasDaTabelaParametros() {
+  const linhas = [];
+  for (const [pid, p] of plataformas) {
+    const ordenados = [...p.ativos.entries()].sort(([a], [b]) => a.localeCompare(b));
+    if (ordenados.length === 0) continue;
+    linhas.push({ grupo: true, pid, nome: p.dados?.nome || pid, moeda: p.dados?.moeda ?? 'BRL' });
+    for (const [aid, ativo] of ordenados) linhas.push({ grupo: false, pid, aid, ativo });
   }
-  soma = Math.round(soma * 100) / 100;
-  const excedeu = soma > 100;
-  el.textContent = excedeu
-    ? `Soma dos orçamentos desta plataforma: ${soma}% — acima de 100%! Reequilibre entre os ativos (dá para salvar assim mesmo).`
-    : `Soma dos orçamentos desta plataforma: ${soma}% de 100%.`;
-  el.classList.toggle('texto-erro', excedeu);
+  return linhas;
 }
-$('cfg-orcamento').addEventListener('input', renderSomaOrcamento);
 
-$('form-config-ativo').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  if (rota.tipo !== 'ativo') return;
-  const status = $('config-ativo-status');
+function renderParametros() {
+  if (rota.tipo !== 'parametros') return;
+  const tabela = $('tabela-parametros');
+  if (!tabela) return;
+
+  // Cabeçalho montado a partir da MESMA lista que monta as células: coluna nova
+  // nunca sai desalinhada do valor que ela edita.
+  const cabecalho = tabela.tHead.rows[0];
+  if (cabecalho.cells.length === 0) {
+    const primeira = document.createElement('th');
+    primeira.textContent = 'Ativo';
+    primeira.className = 'coluna-fixa';
+    cabecalho.append(primeira);
+    for (const coluna of COLUNAS_PARAMETROS) {
+      const th = document.createElement('th');
+      th.textContent = coluna.rotulo;
+      th.title = coluna.titulo;
+      cabecalho.append(th);
+    }
+  }
+
+  // Com edição em curso a tabela NÃO é remontada (um snapshot do Firestore
+  // apagaria o que está sendo digitado) — mas a soma continua sendo refeita.
+  if (parametrosPendentes.size > 0) {
+    renderOrcamentosParametros();
+    renderAvisoTrava();
+    return;
+  }
+
+  const corpo = tabela.tBodies[0];
+  corpo.textContent = '';
+  for (const linha of linhasDaTabelaParametros()) {
+    if (linha.grupo) {
+      const tr = corpo.insertRow();
+      tr.className = 'linha-grupo-plataforma';
+      const td = tr.insertCell();
+      td.colSpan = COLUNAS_PARAMETROS.length + 1;
+      td.textContent = `${linha.nome} · ${linha.moeda}`;
+      continue;
+    }
+    const { pid, aid, ativo } = linha;
+    const tr = corpo.insertRow();
+    tr.dataset.chave = chaveAtivo(pid, aid);
+    if (ativo.config?.ativo === false) tr.className = 'linha-desligada';
+
+    const celNome = tr.insertCell();
+    celNome.className = 'coluna-fixa';
+    const alvo = document.createElement('a');
+    alvo.href = `#/ativo/${pid}/${aid}`;
+    alvo.textContent = `${ativo.manifest?.nome || aid} (${aid})`;
+    celNome.append(alvo);
+
+    for (const coluna of COLUNAS_PARAMETROS) {
+      const celula = tr.insertCell();
+      const campo = document.createElement('input');
+      const valor = valorParametro(ativo.config, coluna);
+      if (coluna.tipo === 'bool') {
+        campo.type = 'checkbox';
+        campo.checked = valor === true;
+      } else {
+        campo.type = 'number';
+        campo.value = valor;
+        if (coluna.min !== undefined) campo.min = coluna.min;
+        if (coluna.max !== undefined) campo.max = coluna.max;
+        campo.step = coluna.step;
+      }
+      campo.title = coluna.titulo;
+      // O valor SALVO viaja no próprio campo: é com ele que a edição é comparada
+      // para saber o que gravar (e o que o botão Desfazer devolve).
+      campo.dataset.salvo = String(valor);
+      campo.dataset.coluna = coluna.chave;
+      campo.addEventListener('input', aoEditarParametro);
+      campo.addEventListener('change', aoEditarParametro);
+      celula.append(campo);
+    }
+  }
+
+  // DEPOIS de remontar as linhas: é ela que pinta as células de orçamento dos
+  // grupos acima de 100%, e as células de agora acabaram de nascer limpas.
+  renderOrcamentosParametros();
+  renderAvisoTrava();
+}
+
+/** Valor atual de um campo, no tipo certo (número ou booleano). */
+const lerCampoParametro = (campo) => (campo.type === 'checkbox' ? campo.checked : Number(campo.value));
+
+function aoEditarParametro(ev) {
+  const campo = ev.currentTarget;
+  const chave = campo.closest('tr')?.dataset.chave;
+  if (!chave) return;
+
+  const salvo = campo.type === 'checkbox' ? campo.dataset.salvo === 'true' : Number(campo.dataset.salvo);
+  const atual = lerCampoParametro(campo);
+  const mudou = !Object.is(atual, salvo);
+  campo.parentElement.classList.toggle('celula-alterada', mudou);
+
+  const pendentes = parametrosPendentes.get(chave) ?? new Map();
+  if (mudou) pendentes.set(campo.dataset.coluna, atual);
+  else pendentes.delete(campo.dataset.coluna);
+  if (pendentes.size > 0) parametrosPendentes.set(chave, pendentes);
+  else parametrosPendentes.delete(chave);
+
+  renderBarraParametros();
+  renderOrcamentosParametros(); // o orçamento digitado muda a soma na hora
+  renderAvisoTrava();
+}
+
+/**
+ * A invariante da trava de lucro: **gatilho > devolução** (V8.19).
+ *
+ * Se a devolução for maior ou igual ao gatilho, o lote arma em
+ * breakeven × (1+gatilho) e a trava pediria um valor ABAIXO do empate — o piso
+ * do breakeven segura, e ela nasceria exatamente ali, sem nunca poder disparar.
+ * Desde a V8.19 o Motor simplesmente não arma nesse caso, então o efeito prático
+ * de violar a regra é **ficar sem trava nenhuma** naquele ativo.
+ *
+ * Esta tela é a primeira que consegue gravar esses dois campos — o formulário
+ * antigo os exibia e nunca os salvava —, então é aqui que o aviso tem de estar.
+ */
+function renderAvisoTrava() {
+  const alvo = $('parametros-aviso-trava');
+  if (!alvo) return;
+  const problemas = [];
+  for (const [pid, p] of plataformas) {
+    for (const [aid, a] of p.ativos) {
+      const pendente = parametrosPendentes.get(chaveAtivo(pid, aid));
+      const valor = (coluna, salvo) => Number(pendente?.has(coluna) ? pendente.get(coluna) : salvo);
+      const g = valor('trava_lucro_gatilho_percentual', a.config?.trava_lucro_gatilho_percentual ?? 1);
+      const d = valor('trava_lucro_devolucao_percentual', a.config?.trava_lucro_devolucao_percentual ?? 0.8);
+      if (g > 0 && d > 0 && g <= d) problemas.push(`${aid} (${pid}): gatilho ${g}% ≤ devolução ${d}%`);
+    }
+  }
+  alvo.hidden = problemas.length === 0;
+  alvo.textContent = problemas.length === 0
+    ? ''
+    : `⚠️ Trava de lucro sem efeito em ${problemas.length} ativo(s) — o GATILHO precisa ser MAIOR que a DEVOLUÇÃO, ` +
+      'senão a trava nasceria no ponto de empate e o robô não a arma (ela ficaria sem poder vender nunca). ' +
+      `Corrija: ${problemas.join(' · ')}.`;
+}
+
+function renderBarraParametros() {
+  const quantos = parametrosPendentes.size;
+  const campos = [...parametrosPendentes.values()].reduce((n, m) => n + m.size, 0);
+  $('btn-parametros-salvar').disabled = quantos === 0;
+  $('btn-parametros-desfazer').disabled = quantos === 0;
+  $('parametros-resumo').textContent = quantos === 0
+    ? ''
+    : `${campos} campo(s) alterado(s) em ${quantos} ativo(s) — ainda NÃO salvos`;
+}
+
+/**
+ * Soma dos orçamentos por plataforma E por modo, já com o que está sendo
+ * digitado. A conta mora em `orcamentos.js` (pura e testada); aqui só se
+ * desenha o resultado.
+ *
+ * O vermelho aparece em DOIS lugares de propósito: na linha da soma e nas
+ * PRÓPRIAS células de orçamento do grupo que estourou. Só na soma não bastava —
+ * ela fica fora da tabela, e numa lista com cinco plataformas o aviso some do
+ * campo de visão exatamente enquanto se digita o número que o causou.
+ */
+function renderOrcamentosParametros() {
+  const alvo = $('parametros-orcamentos');
+  if (!alvo) return;
+  alvo.textContent = '';
+
+  const linhas = somarOrcamentos({
+    plataformas,
+    valorEditado: (pid, aid, coluna, salvo) => {
+      const pendente = parametrosPendentes.get(chaveAtivo(pid, aid));
+      return pendente?.has(coluna) ? pendente.get(coluna) : salvo;
+    },
+  });
+
+  const estourados = new Set();
+  for (const linha of linhas) {
+    const item = document.createElement('p');
+    item.className = linha.excedeu ? 'orcamento-linha estourado' : 'orcamento-linha';
+    item.textContent = textoOrcamento(linha);
+    alvo.append(item);
+    if (linha.excedeu) for (const aid of linha.ativos) estourados.add(chaveAtivo(linha.pid, aid));
+  }
+
+  // Pinta a célula do orçamento de cada ativo que entra num grupo estourado —
+  // é ela que precisa mudar, e é ela que está debaixo do cursor.
+  const tabela = $('tabela-parametros');
+  for (const tr of tabela?.tBodies[0]?.rows ?? []) {
+    const campo = tr.querySelector('input[data-coluna="orcamento_percentual"]');
+    if (!campo) continue;
+    campo.parentElement.classList.toggle('celula-estourada', estourados.has(tr.dataset.chave));
+  }
+}
+aoEvento('btn-parametros-desfazer', 'click', () => {
+  parametrosPendentes.clear();
+  renderBarraParametros();
+  renderParametros();
+  $('parametros-status').textContent = 'alterações descartadas';
+});
+
+aoEvento('btn-parametros-salvar', 'click', async () => {
+  const status = $('parametros-status');
+  const pendentes = [...parametrosPendentes.entries()];
+  if (pendentes.length === 0) return;
   status.textContent = 'salvando…';
-  const config = {
-    ativo: $('cfg-ativo-ligado').checked,
-    modo_simulacao: $('cfg-modo-simulacao').checked,
-    tempo_entre_analises_minutos: Number($('cfg-tempo-analises').value),
-    percentual_minimo_variacao: Number($('cfg-variacao-minima').value),
-    percentual_max_diferenca_execucao: Number($('cfg-divergencia-max').value),
-    tempo_reset_dias: Number($('cfg-tempo-reset').value),
-    taxa_compra_percentual: Number($('cfg-taxa-compra').value),
-    taxa_venda_percentual: Number($('cfg-taxa-venda').value),
-    limite_perda_diaria_percentual: Number($('cfg-limite-perda').value),
-    orcamento_percentual: Number($('cfg-orcamento').value),
-    stop_loss_max_distancia_percentual: Number($('cfg-stop-distancia').value),
-    stop_loss_trailing_percentual: Number($('cfg-stop-trailing').value),
-    minimo_ordem_valor: Number($('cfg-min-valor').value),
-    minimo_ordem_quantidade: Number($('cfg-min-qtd').value),
-  };
+  $('btn-parametros-salvar').disabled = true;
+
+  let salvos = 0;
   try {
-    await setDoc(doc(db, 'plataformas', rota.plataforma, 'ativos', rota.ativo), { config }, { merge: true });
-    status.textContent = 'configurações salvas ✓ (valem no próximo ciclo do bot)';
+    for (const [chave, campos] of pendentes) {
+      const [pid, aid] = chave.split('/');
+      // MERGE por CAMPO: só o que mudou vai ao banco. Gravar o objeto inteiro
+      // plantaria os padrões da tela em ativos que nunca tiveram aquele campo —
+      // armaria uma trava de lucro numa skin da Steam, por exemplo, sem ninguém
+      // ter pedido.
+      const config = Object.fromEntries(campos);
+      await setDoc(doc(db, 'plataformas', pid, 'ativos', aid), { config }, { merge: true });
+      salvos += 1;
+    }
+    parametrosPendentes.clear();
+    avisarConfigMudou();
+    renderBarraParametros();
+    renderParametros();
+    status.textContent = `${salvos} ativo(s) salvo(s) ✓ — valem no próximo ciclo do bot`;
   } catch (e) {
-    status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
+    status.textContent = `erro ao salvar: ${e.code ?? e.message} (as alterações continuam na tela)`;
+    renderBarraParametros();
+  }
+});
+
+// --------------------------- patrimônio da plataforma (tela da plataforma)
+// O número é da PLATAFORMA, não de um ativo — mas quem o carimba é o histórico
+// de cada ativo, uma vez por análise (`patrimonio_plataforma`). Para desenhar a
+// curva da plataforma inteira, juntamos o histórico de TODOS os ativos dela e
+// ficamos com um ponto por instante.
+//
+// Por MODO, e nunca os dois na mesma linha: simulação e real são carteiras
+// separadas, com 100% de orçamento cada uma. Misturá-las desenharia um zigue-
+// zague entre duas grandezas diferentes.
+const PATRIMONIO_POR_ATIVO = 100; // pontos lidos por ativo (leitura é orçada)
+
+let patrimonioModo = null; // null = escolhe sozinho o modo com dado mais recente
+let patrimonioAssinado = null; // assinatura da lista de ativos já assinada
+let cancelPatrimonio = [];
+
+function cancelarPatrimonio() {
+  cancelPatrimonio.forEach((fn) => fn());
+  cancelPatrimonio = [];
+  patrimonioAssinado = null;
+}
+
+/**
+ * Garante que o histórico de todos os ativos da plataforma esteja assinado.
+ * Chamada a cada render porque os ativos chegam DEPOIS da rota quando a página
+ * abre direto em `#/plataforma/XX` — assinar só na troca de tela deixaria o
+ * gráfico vazio para sempre nesse caminho.
+ */
+function garantirSeriePatrimonio() {
+  if (rota.tipo !== 'plataforma') {
+    if (cancelPatrimonio.length > 0) cancelarPatrimonio();
+    return;
+  }
+  const p = plataformas.get(rota.plataforma);
+  const ids = [...(p?.ativos.keys() ?? [])].sort();
+  const assinatura = `${rota.plataforma}:${ids.join(',')}`;
+  if (assinatura === patrimonioAssinado) return;
+
+  cancelarPatrimonio();
+  patrimonioAssinado = assinatura;
+  telaDados.patrimonio = new Map();
+  for (const aid of ids) {
+    cancelPatrimonio.push(
+      onSnapshot(
+        query(
+          collection(db, 'plataformas', rota.plataforma, 'ativos', aid, 'historico'),
+          orderBy('horario', 'desc'),
+          limit(PATRIMONIO_POR_ATIVO),
+        ),
+        (snap) => {
+          telaDados.patrimonio?.set(
+            aid,
+            snap.docs
+              .map((d) => d.data())
+              .filter((h) => h.tipo === 'analise' && Number.isFinite(h.patrimonio_plataforma ?? h.patrimonio)),
+          );
+          renderPatrimonioPlataforma();
+        },
+      ),
+    );
+  }
+}
+
+/** Pontos { x, y } do modo pedido, de todos os ativos, sem instante repetido. */
+function pontosPatrimonio(modo) {
+  const porInstante = new Map();
+  for (const entradas of telaDados.patrimonio?.values() ?? []) {
+    for (const h of entradas) {
+      if ((h.modo ?? 'simulacao') !== modo) continue;
+      porInstante.set(h.horario, h.patrimonio_plataforma ?? h.patrimonio);
+    }
+  }
+  return [...porInstante.entries()]
+    .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    .map(([horario, y]) => ({ x: new Date(horario), y }));
+}
+
+function renderPatrimonioPlataforma() {
+  if (rota.tipo !== 'plataforma') return;
+  const grafico = $('grafico-patrimonio');
+  if (!grafico) return;
+
+  const series = { real: pontosPatrimonio('real'), simulacao: pontosPatrimonio('simulacao') };
+  // Sem escolha do dono, mostra o modo com o dado MAIS RECENTE: numa plataforma
+  // só de simulação, abrir em "Real" mostraria um gráfico vazio de propósito.
+  const ultimo = (modo) => series[modo].at(-1)?.x?.getTime() ?? -Infinity;
+  const modo = patrimonioModo ?? (ultimo('real') >= ultimo('simulacao') ? 'real' : 'simulacao');
+  for (const botao of $('patrimonio-modos').querySelectorAll('button')) {
+    botao.classList.toggle('ativo', botao.dataset.modo === modo);
+  }
+
+  const pontos = series[modo];
+  const moeda = plataformas.get(rota.plataforma)?.dados?.moeda ?? 'BRL';
+  $('patrimonio-nota').textContent = pontos.length === 0
+    ? `Nenhuma análise em ${modo === 'real' ? 'modo real' : 'simulação'} ainda — o patrimônio é carimbado a cada análise de um ativo desta plataforma.`
+    : `Caixa + posições de todos os ativos da plataforma em ${modo === 'real' ? 'MODO REAL' : 'SIMULAÇÃO'}, em ${moeda}, a cada análise. Último: ${dinheiro(pontos.at(-1).y, moeda)}.`;
+
+  desenharLinha(grafico, pontos, 'var(--serie-patrimonio)');
+  preencherTabelaDados($('tabela-patrimonio'), pontos);
+}
+
+aoEvento('patrimonio-modos', 'click', (ev) => {
+  const modo = ev.target?.dataset?.modo;
+  if (!modo) return;
+  patrimonioModo = modo;
+  renderPatrimonioPlataforma();
+});
+
+// ------------------------------------------------------- "analisar agora"
+// Grava uma MARCA (um ISO) no doc do ativo e avisa que a config mudou — o bot
+// derruba o catálogo no próximo minuto, lê a marca e roda o ciclo deste ativo
+// fora da vez, pulando também o filtro de variação mínima (senão a análise que
+// o dono acabou de pedir sairia como "sem variação"). Nenhuma leitura nova no
+// tick do bot: a marca pega a carona que já existe.
+aoEvento('btn-analisar-agora', 'click', async () => {
+  if (rota.tipo !== 'ativo') return;
+  const status = $('analisar-agora-status');
+  const ativo = ativoSelecionado();
+  if (ativo?.config?.ativo === false) {
+    status.textContent = 'este ativo está DESLIGADO — ligue em Parâmetros para o robô analisá-lo';
+    return;
+  }
+  status.textContent = 'pedindo ao bot…';
+  try {
+    await setDoc(
+      doc(db, 'plataformas', rota.plataforma, 'ativos', rota.ativo),
+      { analise_solicitada_em: new Date().toISOString() },
+      { merge: true },
+    );
+    avisarConfigMudou();
+    status.textContent = 'pedido enviado ✓ — a análise sai no próximo minuto e o relógio reinicia nela';
+  } catch (e) {
+    status.textContent = `erro: ${e.code ?? e.message}`;
+  }
+});
+
+// ------------------------------------- contas espelho (V8.18, fase 1)
+// Contas adicionais da MESMA corretora. Aqui a tela só CADASTRA e MOSTRA: quem
+// lê o saldo é o bot (a Steam e as corretoras não liberam CORS, e a credencial
+// nem sequer é legível pelo navegador — ver firestore.rules).
+//
+// A credencial vai para `contas/{c}/dados/api`, que é SÓ-ESCRITA. O que a tela
+// exibe vem de `api_meta`, o espelho mascarado que o BOT publica — exatamente o
+// mesmo desenho da chave da conta principal.
+
+function renderContas() {
+  if (rota.tipo !== 'plataforma') return;
+  const tabela = $('tabela-contas');
+  if (!tabela) return;
+  const contas = telaDados.contas ?? [];
+  const corpo = tabela.tBodies[0];
+  corpo.textContent = '';
+  $('contas-vazio').hidden = contas.length > 0;
+
+  // Conta que aponta para a MESMA carteira da principal: em sombra é
+  // inofensivo, em ordem de verdade DOBRARIA a compra. O aviso fica no topo,
+  // em vermelho, porque é a única coisa desta tela que pode custar dinheiro.
+  const duplicadas = contas.filter((c) => c.estado?.mesma_conta_da_principal);
+  const aviso = $('contas-aviso-mesma');
+  if (aviso) {
+    aviso.hidden = duplicadas.length === 0;
+    aviso.textContent = duplicadas.length === 0
+      ? ''
+      : `⛔ ${duplicadas.map((c) => c.nome).join(', ')} ${duplicadas.length === 1 ? 'tem' : 'têm'} ` +
+        'exatamente o mesmo saldo da sua conta — é a MESMA conta da corretora, com outra chave. ' +
+        'Em sombra não faz mal nenhum. Em ordem de verdade (fase 3), cada compra sairia DUAS VEZES ' +
+        'na sua carteira. Não ligue o modo real nesta conta.';
+  }
+
+  for (const c of contas) {
+    const linha = corpo.insertRow();
+    if (!c.ativa) linha.className = 'linha-desligada';
+
+    linha.insertCell().textContent = `${c.nome} (${c.id})`;
+
+    const celEstado = linha.insertCell();
+    const ponto = document.createElement('span');
+    ponto.className = `ponto-estado ${c.ativa ? 'ligado' : 'desligado'}`;
+    celEstado.append(ponto, document.createTextNode(c.ativa ? 'ativa' : 'pausada'));
+
+    const celModo = linha.insertCell();
+    const badge = document.createElement('span');
+    badge.className = `badge ${c.modo_simulacao ? 'simulacao' : 'real'}`;
+    badge.textContent = c.modo_simulacao ? 'simulação' : 'REAL';
+    celModo.append(badge);
+
+    const conexao = c.estado?.conexao;
+    const celConexao = linha.insertCell();
+    celConexao.textContent = resumoConexao(conexao, dataHora);
+    celConexao.className = estadoConexao(conexao).classe;
+
+    const saldo = c.estado?.saldo;
+    linha.insertCell().textContent = saldo
+      ? `${dinheiro(saldo.saldo_moeda, saldo.moeda)}${Object.keys(saldo.saldos ?? {}).length ? ` + ${Object.entries(saldo.saldos).map(([s, q]) => `${qtd(q)} ${s}`).join(', ')}` : ''}`
+      : '—';
+
+    const meta = c.apiMeta ?? {};
+    linha.insertCell().textContent = Object.entries(meta)
+      .filter(([, v]) => v)
+      .map(([campo, v]) => `${campo}: ${v}`)
+      .join(' · ') || 'não configuradas';
+
+    const celAcoes = linha.insertCell();
+    const alternar = document.createElement('button');
+    alternar.type = 'button';
+    alternar.className = 'botao-fantasma';
+    alternar.textContent = c.ativa ? 'Pausar' : 'Ativar';
+    alternar.addEventListener('click', async () => {
+      alternar.disabled = true;
+      try {
+        await setDoc(doc(db, 'plataformas', rota.plataforma, 'contas', c.id), { ativa: !c.ativa }, { merge: true });
+        avisarConfigMudou();
+      } catch (e) {
+        $('conta-status').textContent = `erro: ${e.code ?? e.message}`;
+      }
+      alternar.disabled = false;
+    });
+    celAcoes.append(alternar);
+  }
+}
+
+/**
+ * Ordens SOMBRA (fase 2): o que cada conta teria comprado. Vêm de
+ * `ativos/{A}/contas/{C}/operacoes`, uma coleção por conta e por ativo — a
+ * tela junta todas e mostra as mais recentes.
+ */
+function renderSombras() {
+  if (rota.tipo !== 'plataforma') return;
+  const tabela = $('tabela-sombras');
+  if (!tabela) return;
+  const sombras = [...(telaDados.sombras ?? new Map()).values()]
+    .flat()
+    .sort((a, b) => String(b.horario ?? '').localeCompare(String(a.horario ?? '')))
+    .slice(0, 20);
+
+  const corpo = tabela.tBodies[0];
+  corpo.textContent = '';
+  $('sombras-vazio').hidden = sombras.length > 0;
+  const moeda = plataformas.get(rota.plataforma)?.dados?.moeda ?? 'BRL';
+
+  for (const s of sombras) {
+    const linha = corpo.insertRow();
+    linha.insertCell().textContent = dataHora(s.horario);
+    linha.insertCell().textContent = s.conta;
+    linha.insertCell().textContent = s.ativo;
+    linha.insertCell().textContent = s.aprovada ? dinheiro(s.valor, moeda) : '—';
+    linha.insertCell().textContent = dinheiro(s.principal?.valor ?? null, moeda);
+    linha.insertCell().textContent = dinheiro(s.saldo_conta, moeda);
+    const celResultado = linha.insertCell();
+    celResultado.textContent = s.aprovada ? '✅ compraria' : `❌ ${s.motivo ?? 'recusada'}`;
+    celResultado.className = s.aprovada ? 'valor-positivo' : 'justificativa-celula';
+    if (!s.aprovada) celResultado.title = s.motivo ?? '';
+  }
+}
+
+/** Os campos de credencial da conta são os MESMOS da plataforma (mesmo conector). */
+let contaCamposMontadosPara = null;
+function montarCamposContaApi(conector) {
+  const alvo = $('conta-campos-api');
+  if (!alvo || contaCamposMontadosPara === `${rota.plataforma}/${conector}`) return;
+  contaCamposMontadosPara = `${rota.plataforma}/${conector}`;
+  alvo.textContent = '';
+  const receita = CAMPOS_API_CORRETORA[conector];
+  $('conta-cred-legenda').textContent = receita
+    ? receita.titulo.replace('Credenciais da corretora', 'Credenciais desta conta')
+    : 'Credenciais desta conta';
+  if (!receita) {
+    const p = document.createElement('p');
+    p.className = 'texto-secundario';
+    p.textContent = 'Esta plataforma não tem campos de credencial cadastrados no painel.';
+    alvo.append(p);
+    return;
+  }
+  for (const { campo, rotulo } of receita.campos) {
+    const label = document.createElement('label');
+    label.textContent = rotulo;
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.dataset.campo = campo;
+    label.append(input);
+    alvo.append(label);
+  }
+}
+
+aoEvento('form-nova-conta', 'submit', async (ev) => {
+  ev.preventDefault();
+  if (rota.tipo !== 'plataforma') return;
+  const status = $('conta-status');
+  const id = $('conta-id').value.trim().toLowerCase();
+  const nome = $('conta-nome').value.trim();
+
+  if (!/^[a-z0-9_-]{1,20}$/.test(id)) {
+    status.textContent = 'identificador inválido — use letras minúsculas, números, hífen ou _';
+    return;
+  }
+  if ((telaDados.contas ?? []).some((c) => c.id === id)) {
+    status.textContent = `já existe uma conta com o id "${id}"`;
+    return;
+  }
+  const api = {};
+  for (const input of $('conta-campos-api').querySelectorAll('input[data-campo]')) {
+    if (input.value.trim()) api[input.dataset.campo] = input.value.trim();
+  }
+  if (Object.keys(api).length === 0) {
+    status.textContent = 'informe ao menos uma credencial — sem ela o robô não consegue nem ler o saldo';
+    return;
+  }
+
+  status.textContent = 'cadastrando…';
+  try {
+    // A conta nasce em SIMULAÇÃO: a ordem de verdade é um ato deliberado, nunca
+    // o que acontece porque alguém esqueceu de configurar um campo.
+    await setDoc(doc(db, 'plataformas', rota.plataforma, 'contas', id), {
+      nome, ativa: true, modo_simulacao: true, criada_em: new Date().toISOString(),
+    });
+    await setDoc(doc(db, 'plataformas', rota.plataforma, 'contas', id, 'dados', 'api'), api);
+    avisarConfigMudou();
+    $('conta-id').value = '';
+    $('conta-nome').value = '';
+    for (const input of $('conta-campos-api').querySelectorAll('input[data-campo]')) input.value = '';
+    status.textContent = `${nome} cadastrada ✓ — o robô lê o saldo dela na próxima hora`;
+  } catch (e) {
+    status.textContent = `erro ao cadastrar: ${e.code ?? e.message}`;
   }
 });
 
@@ -2190,6 +2785,7 @@ $('form-prompt').addEventListener('submit', async (ev) => {
       versao: (telaDados.prompt?.versao ?? 0) + 1,
       atualizado_em: new Date().toISOString(),
     });
+    avisarConfigMudou();
     status.textContent = 'prompt salvo ✓';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
@@ -2232,6 +2828,7 @@ $('form-contexto').addEventListener('submit', async (ev) => {
       validade_ate: null,
       validade_definida_em: null,
     });
+    avisarConfigMudou();
     status.textContent = 'contexto salvo ✓ (a IA o recebe e define a validade na próxima análise)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
@@ -2310,11 +2907,15 @@ function construirCamposApiCorretora(conector) {
 function renderStatusPlataforma() {
   const estado = plataformas.get(rota.plataforma)?.estadoPlataforma ?? {};
   const conexao = estado.conexao ?? null;
-  $('status-conexao').textContent = !conexao
+  // TRÊS estados, não dois (§10.11): "conectada" nunca mais quer dizer só que
+  // o bot conseguiu LER o saldo. Ver dashboard/public/conexaoStatus.js.
+  const est = estadoConexao(conexao);
+  const elConexao = $('status-conexao');
+  elConexao.className = est.classe;
+  elConexao.textContent = !conexao
     ? 'ainda não verificada — o bot testa na próxima rodada'
-    : conexao.ok
-      ? `✅ autenticada (verificada em ${dataHora(conexao.verificado_em)})`
-      : `❌ falhou em ${dataHora(conexao.verificado_em)}: ${conexao.erro ?? 'erro desconhecido'}`;
+    : `${est.icone} ${est.titulo} (verificada em ${dataHora(conexao.verificado_em)})` +
+      (est.detalhe ? ` — ${est.detalhe}` : '');
 
   const mercado = estado.mercado ?? null;
   $('status-mercado').textContent = !mercado
@@ -2422,12 +3023,20 @@ const RECEITAS_NOVO_ATIVO = {
     }),
   },
   toro: {
-    dica: 'Ação ou FII da B3 (modo ASSISTIDO): informe o ticker (ex.: PETR4). O robô analisa em candles DIÁRIOS e só RECOMENDA — você executa na Toro e registra a operação na tela do ativo.',
+    dica: 'Ação ou FII da B3 (modo ASSISTIDO): informe o ticker (ex.: PETR4). O robô analisa em candles DIÁRIOS, a cada 6 horas, com foco em PATRIMÔNIO de longo prazo — e só RECOMENDA: você executa na Toro e registra a operação na tela do ativo.',
     montar: (id, nome, pid) => ({
       manifest: {
         id, nome, tipo: 'stock', plataforma: pid, par: id,
         mercado24h: false,
         permiteDividendos: true, // proventos da B3 somam ao lucro (via brapi)
+        // A camada do SUPERVISOR semanal fica FORA (V8.16). Ele audita as
+        // decisões de ENTRADA de um analista de trade, e a seção "## Geral" que
+        // ele escreve vai para todo ativo: hoje ela manda vender lote no lucro
+        // quando o preço perde a MM9. Numa carteira que existe para segurar
+        // posição por anos isso é o oposto da tese — e como a trava de lucro
+        // nasce DESLIGADA aqui, todo lote da Toro tem `trava_lucro: null` e
+        // casaria com essa regra em 100% dos casos. Mesmo mecanismo das skins.
+        usaSupervisao: false,
         // Swing trade em DIÁRIO: 100 candles de 1d p/ os indicadores; o
         // "volume_24h" vira o volume do último dia (1 candle de 1d).
         resolucaoAnalise: '1d',
@@ -2435,13 +3044,33 @@ const RECEITAS_NOVO_ATIVO = {
         candlesContexto: 1,
         intervaloPadrao: 60,
       },
+      // Padrões de CARTEIRA DE LONGO PRAZO (V8.16). O template da plataforma diz
+      // à IA para pensar em anos, mas prompt não segura o Motor: sem estes
+      // números, a trava de lucro realizaria o ganho num recuo de ~1% e a
+      // carteira giraria sozinha, que é o oposto do que se quer aqui.
       config: {
         ativo: false,
         // Assistida: não há ordem do robô — as operações registradas são REAIS
         // (entram no comparativo renda real × CDI).
         modo_simulacao: false,
         orcamento_percentual: 0,
-        tempo_entre_analises_minutos: 60,
+        // 6 horas: o candle é DIÁRIO, então analisar de hora em hora relê o
+        // mesmo dado e só gasta quota. Quatro leituras por dia já cobrem
+        // abertura, meio e fim de pregão.
+        tempo_entre_analises_minutos: 360,
+        // O papel precisa ter andado 2% desde a última análise para valer uma
+        // chamada nova de IA — em diário, menos que isso é ruído do pregão.
+        percentual_minimo_variacao: 2,
+        // TRAVA DE LUCRO DESLIGADA (gatilho 0). Ela é a peça certa em cripto,
+        // onde realizar 1% muitas vezes é a estratégia; aqui ela venderia
+        // exatamente as posições que a carteira existe para segurar.
+        trava_lucro_gatilho_percentual: 0,
+        trava_lucro_devolucao_percentual: 0,
+        // Chão LARGO: ele existe para o caso de a tese estar errada, não para
+        // reagir a oscilação de pregão. Com a folga em 8%, o trailing do Motor
+        // também para de subir o chão a cada solavanco.
+        stop_loss_max_distancia_percentual: 25,
+        stop_loss_trailing_percentual: 8,
         // Corretagem zero na Toro; sobram emolumentos/liquidação da B3 (~0,03%).
         taxa_compra_percentual: 0.03,
         taxa_venda_percentual: 0.03,
@@ -2477,6 +3106,7 @@ $('form-novo-ativo').addEventListener('submit', async (ev) => {
   status.textContent = 'cadastrando…';
   try {
     await setDoc(doc(db, 'plataformas', rota.plataforma, 'ativos', id), receita.montar(id, nome, rota.plataforma));
+    avisarConfigMudou();
     $('novo-ativo-codigo').value = '';
     $('novo-ativo-nome').value = '';
     status.textContent = `${id} cadastrado ✓ — desligado e com orçamento 0%; configure e ligue na tela dele (menu ao lado)`;
@@ -2517,6 +3147,7 @@ $('form-plataforma').addEventListener('submit', async (ev) => {
     if (Object.keys(api).length > 0) {
       await setDoc(doc(db, 'plataformas', rota.plataforma, 'dados', 'api'), api, { merge: true });
     }
+    avisarConfigMudou();
     status.textContent = 'plataforma salva ✓ (vale no próximo ciclo do bot)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
@@ -2538,8 +3169,41 @@ function steamItemAnalisado(id) {
   return Boolean(ativo) && ativo.config?.ativo !== false;
 }
 
+// ------------------------------------------ pausar as análises da Steam (V8.16)
+// Um campo só no doc da plataforma (`analises_pausadas`), que o orquestrador lê
+// pelo catálogo. Pausa o ANALISTA — que é o que gasta uma chamada de IA por item
+// marcado, a cada rodada — e não o resto: preços do inventário, atualizações do
+// CS2 e alertas de preço-alvo continuam. O campo é genérico de propósito: o
+// núcleo não conhece "STEAM", e qualquer plataforma pode ser pausada assim.
+function renderSteamPausa() {
+  const botao = $('btn-steam-pausar');
+  if (!botao) return;
+  const pausada = plataformas.get(PLATAFORMA_STEAM)?.dados?.analises_pausadas === true;
+  botao.textContent = pausada ? '▶ Retomar análises da Steam' : '⏸ Pausar análises da Steam';
+  botao.className = pausada ? 'botao-primario' : 'botao-perigo';
+  $('steam-pausa-status').textContent = pausada
+    ? '⏸ análises PAUSADAS — nenhuma chamada de IA nesta plataforma'
+    : '';
+}
+
+aoEvento('btn-steam-pausar', 'click', async () => {
+  const status = $('steam-pausa-status');
+  const pausada = plataformas.get(PLATAFORMA_STEAM)?.dados?.analises_pausadas === true;
+  status.textContent = 'salvando…';
+  try {
+    await setDoc(doc(db, 'plataformas', PLATAFORMA_STEAM), { analises_pausadas: !pausada }, { merge: true });
+    avisarConfigMudou();
+    status.textContent = pausada
+      ? 'análises retomadas ✓ — a próxima rodada volta a analisar os itens marcados'
+      : 'análises pausadas ✓ — vale no próximo minuto; preços e notícias continuam';
+  } catch (e) {
+    status.textContent = `erro: ${e.code ?? e.message}`;
+  }
+});
+
 function renderSteam() {
   if (!$('tela-steam')) return; // HTML antigo em cache: degrada em vez de derrubar
+  renderSteamPausa();
   const inv = telaDados.inventario ?? {};
   const itens = Array.isArray(inv.itens) ? inv.itens : [];
   const comPreco = itens.filter((i) => Number.isFinite(i.valor_total));
@@ -2681,6 +3345,7 @@ async function marcarItemSteam(item, check) {
     } else {
       await setDoc(ref, { config: { ativo: false } }, { merge: true });
     }
+    avisarConfigMudou();
     status.textContent = ligar
       ? `${item.market_hash_name} entrou na análise ✓`
       : `${item.market_hash_name} saiu da análise (o histórico dele fica)`;
@@ -2737,8 +3402,9 @@ aoEvento('form-steam-config', 'submit', async (ev) => {
       { steam_id64: id64, intervalos: steamIntervalos() },
       { merge: true },
     );
+    avisarConfigMudou();
     steamConfigEditando = false;
-    status.textContent = 'configuração salva ✓ (o bot passa a usar em até 5 minutos)';
+    status.textContent = 'configuração salva ✓ (o bot passa a usar no próximo minuto)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
   }
@@ -2912,6 +3578,7 @@ aoEvento('form-steam-prompt', 'submit', async (ev) => {
       versao: (telaDados.steamPrompt?.versao ?? 0) + 1,
       atualizado_em: new Date().toISOString(),
     });
+    avisarConfigMudou();
     steamPromptEditando = false;
     status.textContent = 'prompt salvo ✓';
   } catch (e) {
@@ -2942,6 +3609,7 @@ $('form-regras').addEventListener('submit', async (ev) => {
       versao: (telaDados.regras?.versao ?? 0) + 1,
       atualizado_em: new Date().toISOString(),
     });
+    avisarConfigMudou();
     status.textContent = 'regras salvas ✓ (valem para todos os ativos no próximo ciclo)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
@@ -2958,6 +3626,7 @@ $('form-regras-venda').addEventListener('submit', async (ev) => {
       versao: (telaDados.regrasVenda?.versao ?? 0) + 1,
       atualizado_em: new Date().toISOString(),
     });
+    avisarConfigMudou();
     status.textContent = 'regras de liquidação salvas ✓ (valem quando o modo vendas estiver ligado)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
@@ -3078,9 +3747,10 @@ $('sup-ativo').addEventListener('change', async (ev) => {
       { ativo: ev.target.checked, atualizado_em: new Date().toISOString(), origem: 'dashboard' },
       { merge: true },
     );
+    avisarConfigMudou();
     status.textContent = ev.target.checked
-      ? 'camada ligada ✓ (volta ao prompt do analista em até 5 min)'
-      : 'camada desligada ✓ (o analista para de recebê-la em até 5 min)';
+      ? 'camada ligada ✓ (volta ao prompt do analista no próximo ciclo)'
+      : 'camada desligada ✓ (o analista para de recebê-la no próximo ciclo)';
   } catch (e) {
     status.textContent = `erro: ${e.code ?? e.message}`;
   }
@@ -3128,7 +3798,8 @@ $('form-supervisao').addEventListener('submit', async (ev) => {
       },
       { merge: true },
     );
-    status.textContent = 'camada salva ✓ (vale no próximo ciclo, em até 5 min)';
+    avisarConfigMudou();
+    status.textContent = 'camada salva ✓ (vale no próximo ciclo)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;
   }
@@ -3161,6 +3832,7 @@ $('form-template').addEventListener('submit', async (ev) => {
       versao: (telaDados.template?.versao ?? 0) + 1,
       atualizado_em: new Date().toISOString(),
     });
+    avisarConfigMudou();
     status.textContent = 'template salvo ✓ (vale para todos os ativos no próximo ciclo)';
   } catch (e) {
     status.textContent = `erro ao salvar: ${e.code ?? e.message}`;

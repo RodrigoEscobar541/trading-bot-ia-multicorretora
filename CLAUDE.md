@@ -1,7 +1,11 @@
 # CLAUDE.md — Plataforma de Trading Multi-Ativo (V2) — Mercado Bitcoin + IA
 
 > Este documento é a fonte única de verdade sobre **como o sistema funciona e
-> como deve ser mantido**. O sistema está implementado e em produção. Regras de
+> como deve ser mantido**. **Vai responder alguma pergunta de DESEMPENHO
+> ("está dando lucro?", "a IA acerta mais do que erra?", "e se o mercado
+> cair?")? Leia a §18 ANTES de escrever qualquer script** — diagnóstico gasta a
+> mesma cota do Firestore que o bot, e em 21/08/2026 um deles deixou o robô cego
+> por horas. O sistema está implementado e em produção. Regras de
 > negócio detalhadas em `regras.md`; instruções de instalação/deploy no
 > `README.md`; histórico de versões no `ROADMAP.md`; **guia do usuário (como
 > operar no dia a dia) em `MANUAL.md`** — consultar/atualizar o MANUAL ao
@@ -46,8 +50,48 @@
 > breakeven do lote e realiza o ganho. **Ela não é uma terceira exceção à regra
 > imutável 4** — a venda dela passa pelo `avaliar()` de sempre. Junto veio a
 > folga de 5% → 2% (§10.7). **Leia a 10.8 antes de mexer em qualquer saída.**
-> Histórico completo de todas as
+> A V8.12 (2026-08-13) corrigiu o **espelhamento dos saldos reais na simulação**:
+> a foto de referência era gravada com merge, que nunca remove chave de mapa, e
+> símbolo que some da conta real (as corretoras omitem saldo zerado) ficava lá
+> para sempre — o MESMO saque era reaplicado a cada ciclo e fechava como
+> `externa`, sem resultado, o lote que o bot acabara de comprar (5 lotes de BTC
+> entre 08 e 12/08/2026, dois deles 3 segundos após a compra). Agora
+> `simulador.fotoSaldosReais` devolve o símbolo sumido como ZERO explícito, e
+> `sincronizarComSaldosReais` informa `movimentacao_externa` para o **circuit
+> breaker RE-ANCORAR a referência do dia**: depósito e saque mexem no patrimônio
+> sem que ninguém tenha perdido dinheiro, e sem isso um saque virava "patrimônio
+> caiu 20% hoje" e bloqueava as compras da plataforma inteira. **Modo real tem o
+> mesmo furo e continua com ele** — não há detector de movimentação externa lá.
+> A V8.13 (2026-08-13) trouxe o **RECUO DO CICLO QUE FALHA**: `deveAnalisarAgora`
+> agenda pelos carimbos que só um ciclo BEM-SUCEDIDO grava, então um ativo com
+> erro persistente era retentado a cada tick de 1 minuto, para sempre — a Steam
+> passou 8 dias assim, gerando 4.723 erros HTTP 429 em 24 h e nenhuma análise.
+> Agora `estado.falha_ciclo` guarda { em, consecutivas, erro } e
+> `esperaAposFalhaMs` dobra a espera a cada falha seguida, até 8× o intervalo do
+> ativo. **Consequência aceita: ativo em falha fica até 8 intervalos sem checar
+> stop-loss** — ele já ficava, porque o ciclo que quebra não checa nada. Junto
+> veio a CALIBRAÇÃO POR AMPLITUDE: folga, devolução da trava, gatilho e variação
+> mínima deixam de ser um número igual para todos e saem de uma fórmula sobre a
+> amplitude diária MEDIDA de cada ativo (§10.7/§10.8 e ROADMAP V8.13).
+> A V8.16 (2026-08-20) fez o ciclo **NÃO terminar mais na venda do Motor**
+> (§10.10): das 22 vendas pela trava de lucro medidas em produção, o preço estava
+> mais alto 6 h depois em 17 delas, e o robô ficava de fora por até 195 h sem que
+> ninguém tivesse decidido ficar — a saída encerrava o ciclo e a próxima análise
+> ainda dependia do filtro de variação. Agora a mesma rodada que vendeu chama a
+> IA, com o fato da venda no cenário e uma camada de prompt que fala DIFERENTE
+> conforme o motivo (na trava, voltar é legítimo; no stop, o padrão é AGUARDAR).
+> **A regra imutável 4 continua intacta**: quem vende é o Motor, e quando a IA é
+> chamada o lote já saiu da carteira. Junto veio a tela **⚙ Parâmetros** (§12) —
+> todos os ativos e todos os números numa tabela só — e a **Toro virou carteira de
+> PATRIMÔNIO de longo prazo** (§9.2): template autossuficiente,
+> `usaRegrasGerais: false` e padrões de ativo novo com a trava de lucro
+> desligada. Histórico completo de todas as
 > versões (incluindo os planos de execução já consolidados) no `ROADMAP.md`.
+> **Desde 2026-08-03 existe uma CÓPIA PÚBLICA deste projeto** — o repositório
+> `trading-bot-ia-multicorretora`, para o currículo do dono. Ela não acompanha
+> este repo sozinha: **mudança grande tem de ser levada até lá à mão**, e a
+> receita da sanitização (o que sai, o que vira placeholder, como conferir) está
+> na **§17** — leia-a antes de atualizar a cópia, e ver §16 para quando fazer.
 
 ---
 
@@ -105,9 +149,10 @@ RECOMENDAÇÃO para o dono executar e registrar manualmente.
 | Componente | Responsabilidade |
 |---|---|
 | `src/scheduler.js` | Ponto de entrada (`npm start`): endpoint de saúde (Render), inicializa a persistência, roda a migração V1→V2 (única/idempotente) e entrega ao orquestrador. Nada derruba o processo. |
-| `src/nucleo/orquestrador.js` | Acorda a cada 1 min e roda EM SÉRIE os ativos ligados cujo intervalo venceu (nunca dois ciclos simultâneos — evita disputa pelo caixa e rate limit). Config (plataformas/chaves/ativos) vem do CATÁLOGO cacheado e o estado de agendamento de cada ativo vive em memória (V5.2 — ver `catalogo.js` abaixo). Respeita `mercado24h: false`: prefere o estado REAL do pregão informado pelo conector (`estadoMercado()` — cobre feriados/meio-pregão); sem ele, vale a janela heurística configurável da plataforma (`pregao: { inicio, fim }`, padrão seg–sex 10–18h no fuso). Também verifica a autenticação de cada plataforma (`saldos()` — 1×/hora quando OK; a cada 5 min após falha, para refletir rápido chaves corrigidas) e grava o resultado em `dados/estado.conexao` (dashboard). Falha de um ativo não afeta os demais. |
-| `src/nucleo/catalogo.js` | Cache em memória (TTL 5 min) dos docs de CONFIGURAÇÃO: plataformas, credenciais, ativos e camadas do prompt (V5.2 — o tick de 1 min não relê o Firestore; ~17k → ~3k leituras/dia no loop ocioso). **Edições da dashboard valem em até 5 min** (MANUAL §2). Fluxo do BOT que escrever um doc cacheado deve chamar `invalidarCatalogo()`. Cada doc é cacheado no ESCOPO em que ele varia — global (regras gerais, regras de venda, supervisão, config do supervisor), por plataforma (template) ou por ativo (prompt, contexto): guardar um doc global sob uma chave por ativo funciona e não dá erro, só faz N ativos lerem N vezes o mesmo documento (corrigido em 2026-07-26 — antes cada análise custava 7 leituras de config, hoje 2 fora da 1ª de cada janela). `tests/catalogo.test.js` prova o escopo pelo efeito. Invariantes na seção 16. |
-| `src/nucleo/rendaReal.js` | Comparativo de renda REAL × **106% do CDI** (o 106% é configurável — ver `global/config_renda`): consulta a meta Selic na API pública do BCB (SGS 432, cache de 6 h; falha → última taxa persistida → padrão do código) OU usa a **Selic manual** de `global/config_renda` quando o dono a define pela dashboard (sobrepõe a API; limpar volta à API), aproxima CDI = Selic − 0,10 p.p., soma o lucro realizado APENAS dos ativos com `modo_simulacao: false` (doc `estatisticas_real`, por moeda) e persiste tudo em `global/renda_real` — incluindo `lucro_real_total`/`lucro_real_por_moeda` e as taxas equivalentes (ano/mês/semana/período) do robô e do benchmark. O TOTAL comparado com o CDI é em BRL e soma TODAS as moedas: o lucro em moeda estrangeira é convertido pela cotação `global/cambio` (mesma da consolidação do patrimônio; moeda sem cotação fica de fora e é reportada em `moedas_sem_cambio`) — por isso o orquestrador atualiza o câmbio ANTES deste recálculo. A comparação começa quando o PRIMEIRO ativo entra em modo real e a régua nunca volta; o principal é o patrimônio real da largada (melhor esforço via `patrimonio_inicio_dia.real`). Chamado pelo loop do orquestrador a cada 15 min. |
+| `src/nucleo/orquestrador.js` | **V8.14: `global/controle` por listener** (`controleVivo.js`) — a parada de emergência, o kill-switch da IA e os pedidos da dashboard chegam por inscrição, não por 1 leitura/tick. **V8.13: ciclo que FALHA recua** (`esperaAposFalhaMs` + `estado.falha_ciclo`) — a falha acontece antes dos carimbos de horário, e sem o recuo o ativo com erro persistente é retentado a cada tick. Acorda a cada 1 min e roda EM SÉRIE os ativos ligados cujo intervalo venceu (nunca dois ciclos simultâneos — evita disputa pelo caixa e rate limit). Config (plataformas/chaves/ativos) vem do CATÁLOGO cacheado e o estado de agendamento de cada ativo vive em memória (V5.2 — ver `catalogo.js` abaixo). Respeita `mercado24h: false`: prefere o estado REAL do pregão informado pelo conector (`estadoMercado()` — cobre feriados/meio-pregão); sem ele, vale a janela heurística configurável da plataforma (`pregao: { inicio, fim }`, padrão seg–sex 10–18h no fuso). Também verifica a autenticação de cada plataforma (`saldos()` — 1×/hora quando OK; a cada 5 min após falha, para refletir rápido chaves corrigidas — na prática até 15 min desde a V8.14, porque as credenciais vêm do catálogo cacheado) e, **na mesma passada, a PROVA DE EXECUÇÃO** (V8.21, §10.11 — `conector.podeExecutar()`, gate por capacidade: a chave consegue mandar ordem ou só LER?), gravando os dois em `dados/estado.conexao` (dashboard). Falha de um ativo não afeta os demais. |
+| `src/nucleo/catalogo.js` | Cache em memória (**TTL 15 min — V8.14, era 5**) dos docs de CONFIGURAÇÃO: plataformas, credenciais, ativos e camadas do prompt (V5.2 — o tick de 1 min não relê o Firestore; ~17k → ~3k leituras/dia no loop ocioso; a V8.14 leva de ~8k para ~2,7k). **Edições da dashboard valem no PRÓXIMO TICK** (V8.14): a tela grava a marca `catalogo_invalidado_em` em `global/controle` ao salvar, e o orquestrador chama `invalidarCatalogo()` quando a marca muda — os 15 min do TTL viraram a rede de segurança, não a espera normal (MANUAL §2). Fluxo do BOT que escrever um doc cacheado deve chamar `invalidarCatalogo()`. Cada doc é cacheado no ESCOPO em que ele varia — global (regras gerais, regras de venda, supervisão, config do supervisor), por plataforma (template) ou por ativo (prompt, contexto): guardar um doc global sob uma chave por ativo funciona e não dá erro, só faz N ativos lerem N vezes o mesmo documento (corrigido em 2026-07-26 — antes cada análise custava 7 leituras de config, hoje 2 fora da 1ª de cada janela). `tests/catalogo.test.js` prova o escopo pelo efeito. Invariantes na seção 16. |
+| `src/nucleo/controleVivo.js` | **V8.14**: `global/controle` por LISTENER em vez de 1 leitura por tick (1.440/dia do mesmo documento). Custa 1 leitura ao anexar e 1 por MUDANÇA. `lerControle()` devolve o valor da inscrição SÓ quando ela está entregando: sem suporte no backend, antes da 1ª entrega ou com o listener caído, ele volta a ler direto do Firestore — degradar para leitura custa quota, degradar para dado velho ignoraria uma parada de emergência. Reanexa no máximo 1×/min. Nasceu do estouro da quota de LEITURA em 14/08/2026 (3h45 cego; a gravação não estourou). |
+| `src/nucleo/rendaReal.js` | Comparativo de renda REAL × **106% do CDI** (o 106% é configurável — ver `global/config_renda`): consulta a meta Selic na API pública do BCB (SGS 432, cache de 6 h; falha → última taxa persistida → padrão do código) OU usa a **Selic manual** de `global/config_renda` quando o dono a define pela dashboard (sobrepõe a API; limpar volta à API), aproxima CDI = Selic − 0,10 p.p., soma o lucro realizado APENAS dos ativos com `modo_simulacao: false` (doc `estatisticas_real`, por moeda) e persiste tudo em `global/renda_real` — incluindo `lucro_real_total`/`lucro_real_por_moeda` e as taxas equivalentes (ano/mês/semana/período) do robô e do benchmark. O TOTAL comparado com o CDI é em BRL e soma TODAS as moedas: o lucro em moeda estrangeira é convertido pela cotação `global/cambio` (mesma da consolidação do patrimônio; moeda sem cotação fica de fora e é reportada em `moedas_sem_cambio`) — por isso o orquestrador atualiza o câmbio ANTES deste recálculo. A comparação começa quando o PRIMEIRO ativo entra em modo real e a régua nunca volta; o principal é o patrimônio da largada das carteiras que têm ativo NO MODO (melhor esforço via `patrimonio_inicio_dia[modo]`, convertido para BRL pelo mesmo `global/cambio` do lucro, para que denominador e numerador cubram as mesmas carteiras). Como essa referência é medida só com os ativos do modo (V8.14), o comparativo REAL nunca divide o lucro por posição de ativo simulado nem pela carteira virtual — e referência (ou principal já salvo) sem o carimbo `BASE_PATRIMONIO` é recusada e re-medida (V8.15). `patrimonio_inicial_plataformas`/`_fora` dizem quais carteiras entraram na conta e quais não, e a dashboard mostra isso no rodapé do card. Chamado pelo loop do orquestrador a cada 1 h (V8.14 — era 15 min: cada passada custa ~40 leituras e o comparativo se move em escala de dias; nenhuma decisão do robô depende dele). |
 | `src/nucleo/cicloAtivo.js` | O ciclo completo de UM ativo: **checagem do stop-loss (V6.6 — antes de tudo, todo ciclo)**; coleta via conector; filtro de variação (baseline POR ATIVO); indicadores; carteira e posições; prompt em camadas + JSON; chamada à IA; ajustes de stop pedidos pela IA; Motor de Regras (com patrimônio da plataforma p/ orçamento e circuit breaker); execução; snapshot no histórico. |
 | `src/indicadores/` | `rsi.js` (Wilder 14), `stochRsi.js` (9/9/5), `macd.js` (12/26/9), `mediasMoveis.js` (SMA/EMA + cruzamento), `volume.js`, `volatilidade.js`. Módulos puros: recebem números, devolvem números, lançam `RangeError` em dados insuficientes. |
 | `src/ia/iaClient.js` | ÚNICO módulo que fala com a API do Gemini. Recebe o prompt de sistema já montado; percorre a cadeia `modelos_ia` da plataforma (fallback em 429/404/erro transitório; 401/403 interrompe). Resposta malformada vira `AGUARDAR` logado (`validadorResposta.js`). Dois consumidores pela MESMA cadeia: `decidir()` (o analista, a cada ciclo) e `consultar()` (o supervisor semanal — devolve o texto cru para o chamador validar, com timeout longo; resposta cortada por `finishReason` ≠ STOP lança em vez de virar markdown pela metade). |
@@ -116,26 +161,27 @@ RECOMENDAÇÃO para o dono executar e registrar manualmente.
 | `src/ia/validadorSupervisao.js` | Valida a saída do supervisor e é a trava principal do arranjo: recusa a versão INTEIRA (mantendo a anterior) quando o texto passa de 6.000 caracteres ou tenta mexer no formato de saída, revogar as regras gerais ou mandar vender no prejuízo. Também `recortarSupervisao` — o corte por ativo (`## Geral` + `## PLATAFORMA/ATIVO`), para a nota de um ativo nunca vazar para o prompt de outro. |
 | `src/ia/promptBase.md` | SEMENTE do template (agnóstico de ativo). Na migração vira o doc `template` da plataforma no Firestore — a fonte editável passa a ser o Firestore; o arquivo fica como fallback. O mesmo padrão vale para `.md/regras_gerais.md` → doc `global/regras_gerais`, semeado na inicialização (`garantirRegrasGerais`). |
 | `src/regras/regrasEngine.js` | Motor de Regras determinístico e puro. Última palavra antes de qualquer execução. Agnóstico de ativo: mínimos vêm da config; orçamento por ativo; fórmula normativa do lucro (`calcularLucroLiquidoVenda`). Venda validada POR POSIÇÃO (§11.1). V6.6: `validarStopLossCompra` (chão obrigatório na compra, truncado no teto), `avaliarStopLoss` (venda no prejuízo determinística — §10.2) e `validarAjustesStopLoss` (trailing da IA, só para cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa — §10.2). Pós-V6.6: `avaliarTrailingStop` (o Motor sobe o chão sozinho, todo ciclo, em posição com lucro — §10.3) e `taxaCompraPercentualEfetiva`/`breakevenPosicao` (breakeven pela taxa REAL paga na compra — §10.4). V8.5: `avaliarPicoPosicoes` — quais lotes fizeram máxima nova (§10.6); é MEDIÇÃO, não decide nada e não toca em chão nem em venda. **V8.8: `folgaMinimaPercentual` — a distância mínima entre o preço e QUALQUER chão (§10.7), o remédio para o prejuízo que o stop vinha dando; um número só governa o trailing do Motor, o chão da compra e os ajustes da IA, e a config do ativo é PISO dele (a IA só alarga). V8.11: `avaliarTravaLucro` + `posicoesComTravaFurada` + `travaLucroConfig` — a TRAVA DE LUCRO (§10.8), o segundo chão, ESTREITO, que só existe acima do breakeven e realiza o ganho; não é exceção à regra 4 porque a venda dela passa pelo `avaliar()` de sempre.** |
-| `src/posicoes/posicoes.js` | Posições independentes (lotes, §11.1) POR (plataforma, ativo): abertura/fechamento, ciclo de vida, lucro e preço mínimo por posição, reconciliação com o saldo do ativo (entrada externa → posição `externa`; saque → abate). |
-| `src/executor/executor.js` | Único ponto onde `modo_simulacao` (da config DO ATIVO) muda o fluxo. Fornece a carteira ativa, o contexto de execução (preço reconsultado + ordens abertas) e o patrimônio da plataforma; executa e registra operações/estatísticas. O **lucro REALIZADO** de uma venda REAL usa as taxas EFETIVAS da corretora (`lucroRealizadoVenda`, taxas absolutas): a de venda vem do fill **quando > 0** (senão cai para a estimativa da config); a de compra é a real gravada na posição (posição externa, sem taxa → estimativa da config). A validação pré-ordem do Motor segue na config conservadora (garante "nunca vender no prejuízo" ANTES de existir fill). |
-| `src/executor/simulador.js` | Execução fictícia contra a carteira virtual POR PLATAFORMA (`plataformas/{P}/dados/estado`): um caixa + um saldo por ativo. Venda sempre por lotes; espelha depósitos/saques reais (delta). |
+| `src/posicoes/posicoes.js` | Posições independentes (lotes, §11.1) POR (plataforma, ativo): abertura/fechamento, ciclo de vida, lucro e preço mínimo por posição, reconciliação com o saldo do ativo (entrada externa → posição `externa`; saque → abate). **V8.20: sobra abaixo do mínimo de ORDEM não vira posição** (§11.1) — era ela que a trava de lucro tentava vender a cada ciclo, gerando 234 ordens com erro em dois dias. |
+| `src/executor/executor.js` | Único ponto onde `modo_simulacao` (da config DO ATIVO) muda o fluxo. Fornece a carteira ativa, o contexto de execução (preço reconsultado + ordens abertas) e o patrimônio da plataforma; executa e registra operações/estatísticas. **V8.14: `calcularPatrimonioPlataforma` exige `modo` e só soma os ativos daquele modo — simulados e reais têm 100% de orçamento cada um (§10.1). `modoDoAtivo` passou a ler `modo_simulacao === false` (ausente = simulação), alinhando-se à dashboard, ao supervisor e à renda real: era o único ponto onde a falta do campo cairia em REAL.** O **lucro REALIZADO** de uma venda REAL usa as taxas EFETIVAS da corretora (`lucroRealizadoVenda`, taxas absolutas): a de venda vem do fill **quando > 0** (senão cai para a estimativa da config); a de compra é a real gravada na posição (posição externa, sem taxa → estimativa da config). A validação pré-ordem do Motor segue na config conservadora (garante "nunca vender no prejuízo" ANTES de existir fill). |
+| `src/executor/simulador.js` | Execução fictícia contra a carteira virtual POR PLATAFORMA (`plataformas/{P}/dados/estado`): um caixa + um saldo por ativo. Venda sempre por lotes; espelha depósitos/saques reais (delta). **V8.12: a FOTO de referência (`fotoSaldosReais`) devolve como ZERO explícito o símbolo que sumiu da conta real** — o estado é gravado com merge, que não apaga chave de mapa, e sem o zero o mesmo saque era reaplicado a cada ciclo, matando o lote recém-comprado. `sincronizarComSaldosReais` devolve `{ carteira, movimentacao_externa }`; o segundo campo é o que faz o ciclo re-ancorar o circuit breaker. |
 | `src/conectores/conector.js` | CONTRATO dos conectores + registro (`{ mb, tt, bn, toro, steam }`). Interface: `precoAtual`, `precos` (lote), `candles`, `saldos`, `ordensAbertas`, `ordemMercado`, `aguardarFill` + o OPCIONAL `estadoMercado()` (pregão/feriados, para plataformas de bolsa). Plataforma nova = novo diretório implementando o contrato + 1 linha no registro. |
 | `src/conectores/mb/` | Conector do Mercado Bitcoin (API v4): `mbPublico.js` (ticker/tickers, candles, orderbook — sem autenticação) e `mbPrivado.js` (saldos de todos os símbolos, ordens a mercado, fills — API Token ID + Secret, Bearer cacheado). Par dinâmico (`BTC-BRL`, `ETH-BRL`, `SOL-BRL`…). |
-| `src/conectores/tt/` | Conector da Tastytrade (Open API, AÇÕES dos EUA em USD): `ttHttp.js` (base REST kebab-case, produção/sandbox, User-Agent obrigatório), `ttAuth.js` (OAuth2: refresh token permanente → access token ~15 min cacheado), `ttMarketData.js` (cotações REST `/market-data/by-type` em lote; candles via streamer DXLink/dxfeed em WebSocket EFÊMERO — Node >= 22) e `ttRest.js` (conta, saldos, posições, ordens com DRY-RUN para capturar as taxas da corretora, sessões de mercado `/market-time/sessions/current`). Compra por valor = `Notional Market` (fração de ação); venda = `Market` + `Sell to Close`. |
+| `src/conectores/tt/` | Conector da Tastytrade (Open API, AÇÕES dos EUA em USD): `ttHttp.js` (base REST kebab-case, produção/sandbox, User-Agent obrigatório), `ttAuth.js` (OAuth2: refresh token permanente → access token ~15 min cacheado), `ttMarketData.js` (cotações REST `/market-data/by-type` em lote; candles via streamer DXLink/dxfeed em WebSocket EFÊMERO — Node >= 22. **V8.15: o token de cotação é ancorado no ACCESS TOKEN que o pediu, não em 23 h de relógio** — ele nasce dentro da sessão OAuth, que dura ~15 min, e cacheá-lo por quase um dia fazia toda análise da TT falhar em `ERROR UNAUTHORIZED` até o TTL vencer; recusa do streamer marca `ErroTT.autenticacao` e dispara UMA segunda tentativa com token novo, e o `AUTH_STATE UNAUTHORIZED` repetido para de ser reenviado em laço) e `ttRest.js` (conta, saldos, posições, ordens com DRY-RUN para capturar as taxas da corretora, sessões de mercado `/market-time/sessions/current`). Compra por valor = `Notional Market` (fração de ação); venda = `Market` + `Sell to Close`. |
 | `src/nucleo/operacoesManuais.js` | Modo assistido (V6): drena a fila `operacoes_manuais` do ativo (escrita pela dashboard) no início de cada ciclo — COMPRA abre posição `manual` com o custo INFORMADO (régua do "nunca vender no prejuízo"); VENDA abate FIFO/por id, realiza o lucro (prejuízo do dono é aceito e registrado); DIVIDENDO (V6.3) é INFORMATIVO — valor = valor/ação × quantidade em carteira, soma só em `dividendos_recebidos` (não entra no lucro de trading, na renda × CDI nem no caixa). Mantém APENAS o SALDO DO ATIVO da `carteira_manual`: o **caixa (`saldo_moeda`) é informativo** e atualizado só pela dashboard — nenhuma operação do bot o altera (V6.3). Pedido inválido é marcado com erro e nunca trava a fila. |
 | `src/conectores/toro/` | Conector da Toro em MODO ASSISTIDO (B3, BRL): `brapiClient.js` (cotação/candles/dividendos via brapi.dev — token gratuito no header, 1 ticker por requisição, range calculado da quantidade de candles) e `conectorTORO.js` (contrato da V2: `saldos()` lê a `carteira_manual` do estado da plataforma; `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM — ordem nunca é enviada; extensão `dividendos(par)`). |
-| `src/conectores/steam/` | Conector do Mercado da Comunidade Steam em MODO ASSISTIDO (skins do CS2 — ROADMAP prioridade 4, fase 1 entregue em 2026-08-05): `steamPublico.js` (preço por item via `/market/priceoverview/` — UMA chamada por item, não há lote; inventário público via `/inventory/{steamid}/730/2`; leitura de dinheiro FORMATADO, slug do `market_hash_name` para id de documento, URL da imagem no CDN) e `conectorSTEAM.js` (contrato da V2: `saldos()` lê a `carteira_manual`; `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM; `candles()` LANÇA — este mercado não tem candle, e o histórico oficial exigiria cookie da conta do dono; extensões `inventario()` e `intervalos()`). A Steam TEM API de leitura e não tem de EXECUÇÃO — daí o modo assistido, por motivo diferente do da Toro. |
+| `src/conectores/steam/` | Conector do Mercado da Comunidade Steam em MODO ASSISTIDO (skins do CS2 — ROADMAP prioridade 5, fase 1 entregue em 2026-08-05): `steamPublico.js` (preço por item via `/market/priceoverview/` — UMA chamada por item, não há lote; inventário público via `/inventory/{steamid}/730/2`; leitura de dinheiro FORMATADO, slug do `market_hash_name` para id de documento, URL da imagem no CDN) e `conectorSTEAM.js` (contrato da V2: `saldos()` lê a `carteira_manual`; `ordensAbertas()` = []; `ordemMercado`/`aguardarFill` LANÇAM; `candles()` LANÇA — este mercado não tem candle, e o histórico oficial exigiria cookie da conta do dono; extensões `inventario()` e `intervalos()`). A Steam TEM API de leitura e não tem de EXECUÇÃO — daí o modo assistido, por motivo diferente do da Toro. |
 | `src/nucleo/alertasPreco.js` | Alerta de preço-alvo por item (fase 5). É a forma BARATA de vigiar: não gasta chamada de IA, não abre posição e vale para qualquer item — marcado ou não. Pega carona nos preços que a rodada do inventário acabou de buscar (nenhuma consulta nova à Steam). A regra é **um aviso por TRAVESSIA, com rearme**: "abaixo de X" dispara ao tocar X e só volta a valer depois que o preço subir acima de X. Sem o rearme, item parado abaixo do alvo geraria um aviso por hora e o dono desligaria os avisos — o pior desfecho. O estado "já avisei" mora no BANCO, não em memória: o bot reinicia a cada deploy. Função pura: `avaliarAlertas`. NUNCA lança. |
 | `src/nucleo/seriePreco.js` | A série de preço que o BOT constrói sozinho, para mercados SEM candle (`usaIndicadores: false` — hoje as skins da Steam). Um ponto por coleta (`{ t, p }`, sem OHLC: inventar máxima/mínima a partir de amostras horárias seria fabricar precisão), no máximo 720 pontos (~30 dias) e no mínimo 30 min entre pontos — sem esse piso, um ativo de análise a cada 15 min encheria a série de ruído e o passado guardado cairia de 30 para 7 dias. **Janela que a série ainda não cobre volta `null`, nunca 0 e nunca "desde o começo disfarçado de 24 h"** — é a mesma distinção que cegou a métrica de assimetria na V8.1. Funções puras: `acrescentarPonto`, `resumirSerie`. NUNCA lança. |
 | `src/nucleo/noticiasJogo.js` | O "ouvinte" das ATUALIZAÇÕES do jogo (fase 2, 2026-08-05). Único ponto do projeto que consome API OFICIAL da Valve (`ISteamNews/GetNewsForApp` — sem chave, sem cookie). Num mercado de skin, notícia do jogo é o fundamento: case nova, operação e mudança de drop movem o preço mais que qualquer indicador — e são o único "dado de mercado" decente que este mercado tem, já que ele não dá candle. Mesmo gate por CAPACIDADE do orquestrador (`typeof conector.noticias === 'function'`). **A novidade é decidida pelo `gid`**, nunca pela data (a Valve edita notas publicadas) nem pelo título (é sempre "Counter-Strike 2 Update"). **A primeira leitura NÃO avisa nada** — sem memória do que já houve, 10 anúncios velhos viveriam como novidade. Sem novidade não há escrita. Funções puras: `deveConsultar`, `noticiasNovas`, `gidsAtualizados`. NUNCA lança. |
 | `src/nucleo/inventarioSteam.js` | Publica o retrato do INVENTÁRIO de uma plataforma para a dashboard (os endpoints da Steam não liberam CORS: o navegador não consegue lê-los, quem lê é o bot). O orquestrador o chama quando o conector tem `inventario()` — o gate é a CAPACIDADE, nunca o nome da plataforma. Três custos governam o desenho: o limite de ~20 chamadas/min da Steam (daí pausa entre preços e um LOTE por rodada, em rodízio), o tick serial do orquestrador (daí o teto de itens por rodada) e o orçamento de leituras (o relógio vive em MEMÓRIA — o tick de 1 min não lê nada; o doc só é tocado quando há retrato novo). Funções puras: `deveAtualizar`, `fatiaDoRodizio`, `mesclarPrecos` (preserva o preço de quem ficou fora da fatia, com `preco_em` dizendo de quando é), `totalDoInventario`. NUNCA lança: inventário é informação, não decisão. |
 | `src/conectores/bn/` | Conector da Binance (API Spot, cripto em BRL): `bnPublico.js` (ticker 24h/tickers em lote, candles `/klines`, filtros de símbolo `/exchangeInfo` cacheados, hora do servidor — sem autenticação) e `bnPrivado.js` (assinatura HMAC SHA256 + header `X-MBX-APIKEY`, offset de relógio com retry em `-1021`, saldos, ordens a mercado, fills). Compra por valor = `quoteOrderQty`; venda por quantidade TRUNCADA ao `stepSize` do par. A resposta `FULL` da ordem traz a comissão REAL de cada fill, convertida para a moeda da plataforma. Par SEM hífen (`BTCBRL`, `ETHBRL`…). |
+| `src/nucleo/contasEspelho.js` | CONTAS ESPELHO (V8.18, §9.3): contas adicionais da MESMA corretora que aproveitam a decisão tomada para a principal — **zero chamada de IA a mais**, que é o motivo de o recurso existir. Faz duas coisas: replica a COMPRA (em simulação, com o saldo e o livro de lotes DELA) e roda as SAÍDAS AUTOMÁTICAS sobre os lotes dela (stop-loss e trava, as mesmas funções puras do `regrasEngine`). **Não replica a venda decidida pela IA** — os `id`s dos lotes são da carteira da principal; os dados dizem que isso custa 19% das vendas, e os 81% do Motor continuam funcionando. **Contrato: nunca lança** (igual ao `telegram.js`), roda DEPOIS de a operação da principal estar persistida, e a regra imutável 4 vale POR CONTA. `pareceMesmaConta()` detecta a chave que aponta para a MESMA carteira do dono — em ordem real dobraria a compra. |
 | `src/nucleo/relatorioDecisoes.js` | Mede as DECISÕES do sistema (V7 · análise) e manda pelo Telegram a cada 7 dias. Funções PURAS (`resumirOperacoes`, `consolidar`, `razaoRiscoRetorno`, `assimetriaRealizada`, `capturaDoPico`, `deltaDecisoes`, `formatarRelatorio`) + a orquestração que lê o Firestore. **Duas réguas de assimetria, e a ordem entre elas importa** (V8.1): `razaoRiscoRetorno` é a melhor (mede contra o risco ACEITO na entrada) mas exige `stop_loss_inicial`, gravado só desde a V6.6.2 — 0 dos 23 lotes fechados em 2026-07-25 o tinham; `assimetriaRealizada` usa só `lucro_liquido`, que todo lote tem desde a V1, e por isso responde HOJE. Nenhuma das duas cruza moedas. A TERCEIRA régua (V8.5) é `capturaDoPico` — quanto do avanço a saída levou (§10.6); ela mede a saída padrão, é proporção e não dinheiro, então consolida entre moedas. **Não usa IA e não muda nada da operação** — só lê e conta; a camada de IA virá por cima destes números. Custo: `operacoes desde X` (1 query/ativo) + os docs das posições citadas nas vendas (~90 leituras no parque atual). A distribuição COMPRAR/VENDER/AGUARDAR vem de `estado.decisoes_acumuladas` (contador que o `cicloAtivo` incrementa no doc que ele JÁ escreve todo ciclo — custo zero) e o relatório tira o DELTA entre dois retratos, em vez de varrer o histórico. Trabalho GLOBAL: só a instância primária. |
 | `src/notificacoes/telegram.js` | ÚNICO módulo que fala com a API do Telegram (V7). Avisos de compra, venda (com lucro/prejuízo e marcação de stop-loss), recomendação da plataforma assistida e problemas (quota da IA esgotada, corretora fora do ar), sem nenhuma IA envolvida. **Contrato: nunca lança** — notificação é acessório e não pode derrubar um ciclo nem impedir uma ordem; falha vira `log.aviso` e devolve `false`. Problemas têm trava anti-spam de 24 h POR CHAVE (`quota_ia:MB`, `conexao:BN`), com a trava rearmada pela notificação de recuperação. Config no doc `global/telegram` (via catálogo cacheado; fallback `.env`). |
 | `src/firebase/firebaseClient.js` | ÚNICA camada de persistência (árvore da seção 7). Backends: `firestore` (produção) e `memoria` (`BOT_PERSISTENCIA=memoria`, dev/testes, mesma interface). API por `(plataforma, ativo)`; acesso "bruto" reservado à migração. |
 | `src/migracao/migrarV1paraV2.js` | Migração única e idempotente V1→V2 (roda na inicialização). Coleções V1 preservadas como backup. Instalação nova: semeia a árvore com MB + BTC (ligado) e ETH/SOL (desligados). |
 | `src/utils/logger.js` | Log central com **redação de segredos** (nenhuma chave aparece em log) e sink opcional para a coleção `logs` (só aviso/erro/crítico). |
-| `dashboard/public/` | Painel web (Firebase Hosting): login restrito por UID, menu lateral (hambúrguer no mobile), visão geral consolidada, tela por ativo, tela da plataforma com editores de template/prompt/contexto. |
+| `dashboard/public/` | Painel web (Firebase Hosting): login restrito por UID, menu lateral (hambúrguer no mobile), visão geral consolidada, tela por ativo, tela **⚙ Parâmetros** (todos os ativos e todos os números numa tabela só — V8.16), tela da plataforma com editores de template/prompt/contexto e as **contas espelho** (V8.18). **Três módulos PUROS, sem DOM e sem Firebase, e por isso testáveis fora do navegador**: `limiteLogin.js` (freio de tentativas), `orcamentos.js` (soma dos orçamentos por plataforma E por modo — a conta que acende o vermelho de "passou de 100%") e `patrimonio.js` (o total consolidado, só dinheiro REAL). **É o padrão para qualquer conta da dashboard que decida algo visível**: as duas últimas nasceram de defeitos que ficaram invisíveis justamente por estarem soltas no `app.js` (V8.16/V8.17). |
 
 ---
 
@@ -224,16 +270,42 @@ IA-investidora/
 ├── .md/regras_gerais_venda.md  # SEMENTE das regras do MODO VENDAS (V8 — §10.5). SUBSTITUEM as de
 │                               # cima enquanto a liquidação estiver ligada: o analista deixa de
 │                               # procurar entrada e passa a procurar a melhor saída.
+├── .md/Ativo_BTC.md            # SEMENTE do prompt do ATIVO BTC (V8.12) — o mesmo texto alimenta
+│                               # MB/BTC e BN/BTC. Só o que é próprio do ativo e MUDA uma decisão:
+│                               # amplitude típica do dia (e o chão/tamanho que ela impõe), alvo em
+│                               # múltiplos do custo, o câmbio embutido no par em BRL e a armadilha
+│                               # da faixa estreita (médias cruzam para cima sem haver tendência).
+│                               # Publicado com `node publicar-regras.mjs BTC --executar`.
 ├── .md/regras_steam.md         # SEMENTE do template da plataforma STEAM (skins do CS2). Ela nasce
 │                               # com `usaRegrasGerais: false`, então ESTE texto é a 1ª camada do
 │                               # prompt dela — as regras gerais falam de RSI, MACD e taxa de 0,1%,
 │                               # e aqui a taxa de venda é 15% e não existe candle nenhum.
+├── .md/AgenteIA_Toro_AcoesBR.md # SEMENTE do template da TORO. Mesma situação da Steam desde a
+│                               # V8.16 (`usaRegrasGerais: false`, §9.2): é a 1ª camada do prompt
+│                               # dela, e por isso autossuficiente. Carteira de PATRIMÔNIO de longo
+│                               # prazo — o texto diz quando NÃO vender, e que giro é o inimigo.
+│                               # Publicado com `node publicar-regras.mjs TORO --executar`.
+├── .md/AgenteIA_{MB,Binance,tastytrade}*.md  # rascunhos dos templates das outras plataformas.
+│                               # Elas RECEBEM as regras gerais, então o template delas carrega só
+│                               # o que é específico — e a fonte de verdade é o Firestore, editável
+│                               # pela dashboard. Estes arquivos NÃO são publicados por script.
+├── .md/MeusConceitosDosInvesitmentos.md  # notas pessoais do dono sobre a própria carteira.
+│                               # Não descreve o sistema; sai da cópia pública (§17).
 ├── README.md                   # instalação, deploy, decisões de implementação
 ├── ROADMAP.md                  # histórico das versões (inclui os planos de execução já consolidados)
 ├── .env.example                # nomes de variáveis (o .env real nunca é versionado)
 ├── .firebaserc / firebase.json / firestore.rules / firestore.indexes.json
 ├── .github/workflows/firebase-deploy.yml  # push na main → deploy hosting+regras
-├── scripts/resetar-dados.mjs   # RESET do histórico de operação (MANUAL §8.8). Nunca roda sozinho:
+├── scripts/vps-deploy.sh       # DEPLOY do bot na VPS, chamado por cron a cada 2 min: só age quando
+│                               # há commit novo em origin/main, roda os testes e SÓ reinicia o pm2
+│                               # se passarem. O bit de execução vive no ÍNDICE do git (modo 100755)
+│                               # — nunca `chmod +x` local; ver o cabeçalho do arquivo, que conta as
+│                               # duas vezes em que isso deixou o bot 16 h em código velho.
+├── diag-*.mjs / aplicar-v811.mjs  # diagnósticos de USO ÚNICO na raiz, guardados porque cada um
+│                               # sustenta um número citado no ROADMAP (`diag-motor.mjs` é o da
+│                               # V8.16: o que o preço fez depois de cada saída do Motor). Saem da
+│                               # cópia pública (§17).
+├── scripts/resetar-dados.mjs   # RESET do histórico de operação (MANUAL §8.9). Nunca roda sozinho:
 │                               # não é chamado pelo bot e sem `--executar` só simula. Trava a
 │                               # operação, DESLIGA o modo vendas (o flag mora em global/controle,
 │                               # que a limpeza não apaga — sobreviveria, e o bot voltaria
@@ -249,7 +321,12 @@ IA-investidora/
 │   ├── scheduler.js            # entrada: saúde + persistência + migração + orquestrador
 │   ├── nucleo/ (orquestrador.js, cicloAtivo.js, rendaReal.js, catalogo.js,
 │   │            operacoesManuais.js, relatorioDecisoes.js, supervisor.js,
-│   │            inventarioSteam.js, noticiasJogo.js, seriePreco.js)
+│   │            inventarioSteam.js, noticiasJogo.js, seriePreco.js,
+│   │            alertasPreco.js — preço-alvo com rearme por travessia,
+│   │            controleVivo.js — `global/controle` por LISTENER (V8.14),
+│   │            instancia.js — escopo por BOT_PLATAFORMAS, quem é o primário,
+│   │            contasEspelho.js — contas espelho V8.18: replica a COMPRA e
+│   │              roda as saídas automáticas na conta, com ZERO chamada de IA)
 │   ├── indicadores/ (rsi, stochRsi, macd, mediasMoveis, volume, volatilidade)
 │   ├── ia/ (iaClient.js, montadorPrompt.js, promptBase.md, validadorResposta.js,
 │   │        validadorSupervisao.js)
@@ -265,13 +342,25 @@ IA-investidora/
 │   ├── firebase/firebaseClient.js
 │   └── utils/ (logger.js, formatador.js)
 ├── dashboard/public/ (index.html, app.js, style.css, firebase-config.js,
-│                      limiteLogin.js — freio de tentativas do login, módulo
-│                      PURO e por isso testável fora do navegador)
+│                      limiteLogin.js — freio de tentativas do login,
+│                      orcamentos.js — soma dos orçamentos por plataforma E por
+│                      modo, a conta que acende o vermelho de "passou de 100%",
+│                      patrimonio.js — o total consolidado da Visão geral, SÓ
+│                      dinheiro real (V8.17),
+│                      conexaoStatus.js — os QUATRO estados da conexão com a
+│                      corretora, incluindo o "lê mas NÃO envia ordens" da
+│                      V8.21 (§10.11).
+│                      Os quatro últimos são módulos PUROS, sem DOM e sem Firebase,
+│                      e por isso testáveis fora do navegador — é o padrão para
+│                      qualquer conta da dashboard que decida algo visível)
 └── tests/ (indicadores, stochRsiCruzamento, regrasEngine, validadorResposta,
             iaClient, posicoes, simulador, migracaoV2, nucleo, catalogo,
             conectorTT, conectorBN, conectorTORO, conectorSTEAM, modoAssistido, rendaReal,
             telegram, relatorioDecisoes, supervisor, limiteLogin, modoVendas,
-            resetarDados, camposDeMedicao, rules/firestoreRules)
+            resetarDados, camposDeMedicao, travaLucro, orcamentoPorModo, orcamentos,
+            controleVivo, instancia, segredos, patrimonio, contasEspelho,
+            provaExecucao, alertaOportunidade,
+            rules/firestoreRules)
 ```
 
 ---
@@ -478,11 +567,18 @@ global (coleção)
 │   editável pela dashboard; semente: .md/regras_gerais.md)
 ├── migracoes (doc: marcadores de backfills únicos — hoje
 │   posicoes_aberta_modo_em, do backfill V5.2 do campo aberta_modo)
-├── renda_real (doc, escrito SÓ pelo bot a cada 15 min: lucro_real_total (total
+├── renda_real (doc, escrito SÓ pelo bot a cada 1 h — V8.14, era 15 min: a
+│   passada varre as estatísticas de TODOS os ativos nos DOIS modos (~40
+│   leituras) e o número se move em escala de dias: lucro_real_total (total
 │   em BRL, já com o lucro em moeda estrangeira convertido pelo global/cambio) e
 │   lucro_real_por_moeda — lucro realizado APENAS de ativos fora da simulação,
 │   por moeda NATIVA —, moedas_sem_cambio (as que ficaram fora do total por falta
-│   de cotação) + inicio_comparacao (fixado quando o 1º ativo vira real), patrimonio_inicial,
+│   de cotação) + inicio_comparacao (fixado quando o 1º ativo vira real),
+│   patrimonio_inicial (o PRINCIPAL: patrimônio de largada das carteiras do modo,
+│   em BRL) com patrimonio_inicial_base (o carimbo BASE_PATRIMONIO sob o qual foi
+│   medido — sem ele o principal é descartado e re-medido),
+│   patrimonio_inicial_plataformas / patrimonio_inicial_fora (quais carteiras
+│   entraram e quais não) e patrimonio_inicial_medido_em,
 │   selic { taxa_aa, cdi_aa, benchmark_aa, fonte, consultada_em } e o
 │   comparativo robô × 106% do CDI em %/dinheiro por período; ver
 │   src/nucleo/rendaReal.js)
@@ -503,12 +599,21 @@ global (coleção)
 │   semente `.md/regras_gerais_venda.md`, semeado SEMPRE — o dono precisa poder
 │   ler e ajustar o texto ANTES de ligar o modo)
 ├── controle (doc V6.2, PARADA DE EMERGÊNCIA: escrito pela DASHBOARD —
-│   `operacao_travada` + travado_em/origem. Travado, o orquestrador lê o flag
-│   FRESCO a cada tick e pula a rodada inteira: nenhuma análise, nenhuma ordem.
-│   V7.2: carrega também `supervisao_solicitada` — o botão "rodar agora" da
-│   supervisão pega carona nesta leitura que já acontece todo tick, em vez de
+│   `operacao_travada` + travado_em/origem. Travado, o orquestrador pula a
+│   rodada inteira: nenhuma análise, nenhuma ordem. V8.14: o valor chega por
+│   LISTENER (`src/nucleo/controleVivo.js`) em vez de uma leitura por tick —
+│   1 leitura ao anexar e 1 por MUDANÇA, no lugar de 1.440/dia do mesmo doc;
+│   listener caído volta a ler direto, porque freio de mão não pode falhar em
+│   silêncio. V7.2: carrega também `supervisao_solicitada` — o botão "rodar
+│   agora" da supervisão pega carona nesta entrega, em vez de
 │   custar um doc próprio × 1.440 leituras/dia. O BOT limpa o flag antes de
 │   rodar, para um erro não repetir a chamada de IA a cada minuto.
+│   V8.14: carrega também `catalogo_invalidado_em` — a MARCA que a dashboard
+│   grava ao salvar QUALQUER doc que o catálogo cacheia (`avisarConfigMudou()`
+│   em dashboard/public/app.js). É o que devolve a edição instantânea depois de
+│   o TTL do catálogo subir para 15 min: o dono salva, o bot derruba o cache no
+│   próximo tick, e nenhuma leitura nova é gasta. O TTL segue valendo como rede
+│   de segurança se a marca não chegar (a gravação dela é melhor esforço).
 │   Carrega também `inventario_solicitado_em` — a MARCA do botão "atualizar
 │   agora" da seção Steam. Mesma carona, e por marca (um ISO) em vez de
 │   booleano: o bot não precisa escrever nada para consumir o pedido, basta
@@ -544,7 +649,8 @@ global (coleção)
 ├── supervisor_prompt (doc V7.2: as instruções do PRÓPRIO supervisor —
 │   { conteudo, versao, atualizado_em }, semente `.md/supervisor.md`, editável
 │   pela dashboard. Vazio = a rodada nem chama a IA)
-├── cambio (doc V6.2, escrito SÓ pelo bot a cada 15 min: cotação USD→BRL — PTAX
+├── cambio (doc V6.2, escrito SÓ pelo bot a cada 1 h — V8.14; a PTAX é
+│   publicada 1×/dia: cotação USD→BRL — PTAX
 │   série SGS 1 do BCB, TTL 6 h — para a dashboard consolidar o patrimônio
 │   multi-moeda da visão geral em BRL. SÓ exibição; nenhuma decisão usa isto)
 ├── relatorio_decisoes (doc V7, escrito SÓ pelo bot primário a cada 7 dias:
@@ -630,13 +736,35 @@ plataformas (coleção)
     │   │                 padrão de TODOS os ativos da plataforma)
     │   └── estado       (doc: carteira_virtual { saldo_moeda, saldos },
     │                     sincronizacao_saldos_reais, patrimonio_inicio_dia por
-    │                     modo, conexao { ok, erro, verificado_em } — status da
-    │                     autenticação, 1×/hora — mercado { aberto, estado,
+    │                     modo, conexao { ok, erro, verificado_em,
+    │                     pode_executar, erro_execucao } — status da
+    │                     autenticação, 1×/hora; `pode_executar` (V8.21, §10.11)
+    │                     é TRI-ESTADO — true opera, false LÊ MAS NÃO OPERA,
+    │                     null não verificado — e os dois campos são gravados
+    │                     SEMPRE, porque o merge não apaga chave de mapa e um
+    │                     `false` velho ficaria na tela para sempre —
+    │                     mercado { aberto, estado,
     │                     abre_em, fecha_em } — pregão via conector — e, em
     │                     plataforma ASSISTIDA, carteira_manual { saldo_moeda,
     │                     saldos } — `saldo_moeda` (caixa) é INFORMATIVO,
     │                     atualizado SÓ pela dashboard; `saldos` (quantidade por
     │                     ativo) mantidos pelas operações manuais — V6.3)
+    ├── contas (subcoleção V8.18 — CONTAS ESPELHO, §9.3)
+    │   └── {C} (doc LEGÍVEL: { nome, ativa, modo_simulacao, criada_em } —
+    │       │    nenhum segredo aqui)
+    │       └── dados (subcoleção)
+    │           ├── api      (doc SÓ-ESCRITA pelo navegador — as credenciais
+    │           │             DAQUELA conta. Não é um campo no doc da
+    │           │             plataforma porque `plataformas/{P}` é LEGÍVEL, e
+    │           │             chave em doc legível é o furo fechado em 25/07)
+    │           ├── api_meta (espelho mascarado publicado pelo BOT — 4 últimos
+    │           │             caracteres, é o que a tela mostra)
+    │           └── estado   (doc escrito pelo bot: conexao { ok, erro },
+    │                         saldo { moeda, saldo_moeda, saldos } lido 1×/hora,
+    │                         carteira_virtual da conta e
+    │                         mesma_conta_da_principal — o alerta de que a chave
+    │                         aponta para a MESMA carteira do dono, que em ordem
+    │                         real dobraria a compra)
     └── ativos (subcoleção)
         └── BTC (doc — { manifest: {...}, config: {...} }, ver 7.2)
             ├── dados (subcoleção)
@@ -669,6 +797,21 @@ plataformas (coleção)
             │                               líquido se VENDER TUDO agora, agregado dos
             │                               lotes pela fórmula canônica §4; V6: +
             │                               recomendacao do modo assistido)
+            ├── contas/{C} (V8.18 — CONTAS ESPELHO, §9.3: a árvore PARALELA de
+            │               cada conta adicional da mesma corretora)
+            │   ├── posicoes   (o livro de lotes DA CONTA — mesma forma dos da
+            │   │               principal, inclusive aberta_modo, stop_loss,
+            │   │               preco_maximo e trava_lucro)
+            │   └── operacoes  (as ordens DELA: status 'sombra' quando o Motor
+            │                   recusou, 'simulada' quando executou na carteira
+            │                   virtual dela. Ainda NÃO existe ordem real —
+            │                   fase 3b, ver ROADMAP item 13)
+            │
+            │   POR QUE UMA ÁRVORE SEPARADA, e não um campo conta_id nos docs da
+            │   principal: para que um defeito no espelho não consiga alcançar o
+            │   caminho que já mexe com dinheiro, e para que as queries do
+            │   caminho quente da principal não mudem NEM DE FORMA. Sem conta, o
+            │   caminho é byte a byte o de sempre (`colDoAtivo`, 4º parâmetro).
             ├── historico  (subcoleção: verificacao/analise com snapshot de
             │               posições, valor_posicoes, patrimonio_plataforma,
             │               lucro_total e versões de template/prompt usadas)
@@ -739,7 +882,8 @@ plataformas (coleção)
     "stop_loss_trailing_percentual": 3,
     "//": "stop_loss_trailing_percentual é a FOLGA do ativo (V8.8, §10.7): distância do trailing do Motor E distância mínima de qualquer chão. Editável na dashboard como 'Folga do stop-loss (%)'",
     "minimo_ordem_valor": 10, "minimo_ordem_quantidade": 0.00001
-  }
+  },
+  "//analise_solicitada_em": "V8.16 — MARCA (ISO) do botão '⚡ Analisar agora' da dashboard. FORA da config de propósito: não é ajuste de operação, é um pedido de uma vez só. O orquestrador lembra em memória qual marca já atendeu e não escreve nada para consumi-la (mesmo padrão de inventario_solicitado_em)"
 }
 ```
 
@@ -765,7 +909,12 @@ plataformas (coleção)
   `candlesContexto: 1` — campos novos do manifest, padrão `15m`/`1h`/24 nos
   demais); config nasce com `modo_simulacao: false` (as operações registradas
   são REAIS — o dono as executou), taxas 0,03% (emolumentos B3; corretagem da
-  Toro é zero) e mínimo de 1 ação.
+  Toro é zero) e mínimo de 1 ação. **Desde a V8.16 a config nasce calibrada para
+  PATRIMÔNIO DE LONGO PRAZO** (§9.2): análise a cada 6 h (360 min — o candle é
+  diário, e analisar de hora em hora relê o mesmo dado), variação mínima de 2%,
+  **trava de lucro DESLIGADA** (gatilho 0 — ela venderia justamente as posições
+  que a carteira existe para segurar) e chão largo (distância máxima 25%, folga
+  8%).
 - Chaves vazias em `dados/api` caem para o `.env` local (`GEMINI_API_KEY`,
   `MB_API_TOKEN_ID`, `MB_API_TOKEN_SECRET`, `TT_CLIENT_ID`, `TT_CLIENT_SECRET`,
   `TT_REFRESH_TOKEN`, `TT_ACCOUNT_ID`, `TT_AMBIENTE`, `BN_API_KEY`,
@@ -804,9 +953,13 @@ plataformas (coleção)
   para o patrimônio da plataforma), `candles(par, res, n)`, `saldos()`
   (→ `{ moeda, saldo_moeda, saldos: { SIMBOLO: qtd } }`), `ordensAbertas(par)`,
   `ordemMercado({ par, lado, valor?, quantidade? })`, `aguardarFill(orderId, par)`.
-  Método OPCIONAL para plataformas de bolsa: `estadoMercado()` →
+  Métodos OPCIONAIS (gate por CAPACIDADE): `estadoMercado()` →
   `{ aberto, estado, abre_em, fecha_em }` (pregão com feriados/meio-pregão,
-  direto da corretora, cacheado 5 min no conector).
+  direto da corretora, cacheado 5 min no conector) e **`podeExecutar({ par })` →
+  `{ ok: true|false|null, erro }`** — a PROVA DE EXECUÇÃO da V8.21 (§10.11):
+  a credencial consegue MANDAR ordem, ou só ler? Implementam BN
+  (`/api/v3/order/test`) e TT (dry-run); nenhum dos dois cria ordem, e nenhum
+  deles lança.
 - **MB (API v4)**: `/authorize` com Token ID+Secret → Bearer cacheado (renovado
   60s antes de expirar); `/tickers` (aceita vários símbolos), `/candles`,
   `/accounts/{id}/balances`, ordens a mercado (compra por `cost`, venda por
@@ -893,8 +1046,8 @@ plataformas (coleção)
   (doc `global/supervisao`, escrito pela IA supervisora — §9.1); 6) **notícias
   do jogo** (plataformas que as têm — hoje a Steam); 7) contexto do usuário com
   data. O CONTRATO_SAIDA blindado segue SEMPRE por último.
-  **Exceção da camada 1**: plataforma com `usaRegrasGerais: false` (hoje só a
-  STEAM) NÃO recebe as regras gerais — elas descrevem um mercado que não é o
+  **Exceção da camada 1**: plataforma com `usaRegrasGerais: false` (STEAM e,
+  desde a V8.16, TORO — §9.2) NÃO recebe as regras gerais — elas descrevem um mercado que não é o
   dela. No lugar entra o template dela. Isso **não afrouxa proteção nenhuma**:
   "nunca vender no prejuízo", stop-loss e orçamento vivem no Motor, em código.
   A LIQUIDAÇÃO (V8) ignora o flag de propósito: é ordem do dono e vale em toda
@@ -940,6 +1093,103 @@ análises e ninguém percebia até o dono estranhar um número.
   dentro da janela de quota (fora dela, a checagem é uma função pura).
 - **Auditoria**: cada análise grava `versao_supervisao` no histórico — é o que
   permite dizer se uma mudança de comportamento veio da camada nova.
+
+### 9.3 CONTAS ESPELHO (V8.18) — uma análise, N contas
+
+- **O que é**: contas adicionais da MESMA corretora
+  (`plataformas/{P}/contas/{C}`) que recebem as ordens decididas para a conta
+  PRINCIPAL. A IA é chamada **uma vez**, olhando a carteira da principal — é o
+  recurso inteiro: N contas por **zero** chamada de IA a mais.
+- **Estado hoje: FASES 1, 2, 3a e 4 entregues; falta a 3b (ordem real).** O bot lê o saldo das contas
+  (`lerContasEspelho`, 1×/hora) e, a cada COMPRA executada na principal, grava
+  a ordem em SIMULAÇÃO na conta (`src/nucleo/contasEspelho.js`): mesmo
+  `avaliar()`, carteira virtual e livro de lotes PRÓPRIOS da conta
+  (`ativos/{A}/contas/{C}/posicoes`). **Nenhuma ordem sai para a corretora.** O
+  plano das fases está no ROADMAP, item 13.
+- **O simulador é PARAMETRIZADO, não duplicado**: `garantirCarteiraVirtual` e
+  `executarOrdemSimulada` aceitam um `escopo` (`lerEstado`/`salvarEstado`), e
+  sem ele o comportamento é o de sempre. A matemática de taxa e arredondamento
+  tem de ser IDÊNTICA entre principal e espelho — duas cópias seriam duas
+  verdades. Mesma ideia no `colDoAtivo`, que ganhou um 4º parâmetro `conta`.
+- **Saídas automáticas POR CONTA** (`saidasAutomaticasDasContas`, fase 4):
+  pico, trailing, trava e stop-loss rodam sobre os lotes da conta a cada ciclo,
+  com as mesmas funções puras do `regrasEngine`, e fecham com o mesmo
+  vocabulário (`fechada_por`). É o que torna a divergência aceitável: a conta
+  não recebe a venda da IA, mas 81% das vendas do sistema são do Motor.
+- **`pareceMesmaConta()`**: conta espelho cujo caixa E saldos por símbolo são
+  idênticos aos da principal é a MESMA conta com outra chave. Em sombra é
+  inofensivo; em ordem de verdade dobraria a compra. Marcado em
+  `mesma_conta_da_principal`, com banner vermelho na tela. **A fase 3 não pode
+  ser ligada numa conta marcada assim.**
+- **A credencial mora em `contas/{C}/dados/api`, só-escrita.** Não é um campo
+  no doc da plataforma porque `plataformas/{P}` é LEGÍVEL pelo navegador — uma
+  lista de chaves ali seria o furo fechado em 2026-07-25.
+- **As posições da conta espelho vivem em árvore própria**
+  (`ativos/{A}/contas/{C}/posicoes`, a partir da fase 3) e a principal continua
+  exatamente onde está. Não é organização: é para que um defeito no espelho não
+  alcance o caminho que já mexe com dinheiro, e para que as queries do caminho
+  quente da principal não mudem nem de forma.
+- **Ao mexer aqui, preservar**: a conta principal não muda de comportamento
+  (teste da principal que precise ser afrouxado significa espelho errado); a
+  regra imutável 4 vale POR CONTA, com a carteira DELA; falha no espelho nunca
+  toca a principal; e zero chamada de IA a mais — se uma fase pedir análise por
+  conta, a fase está errada.
+
+### 9.2 Plataforma que NÃO recebe as regras gerais (`usaRegrasGerais: false`)
+
+As regras gerais são a camada 1 do prompt e têm prioridade sobre tudo que vem
+depois. Elas foram escritas para **day trade de cripto**: RSI de 15 minutos,
+MACD, giro rápido, realização de lucro em movimentos de ~1%. Numa plataforma cujo
+mercado é de outra natureza, elas não são "conselho genérico" — são instrução
+errada com prioridade máxima, e o template da plataforma abaixo delas vira um
+prompt contraditório.
+
+O flag `usaRegrasGerais: false` no doc da plataforma tira essa camada. **Quem
+tem hoje:**
+
+| Plataforma | Por quê |
+| :--- | :--- |
+| **STEAM** (V8) | Skins não têm candle, RSI nem MACD. O template dela é a primeira camada. |
+| **TORO** (V8.16) | Carteira de **patrimônio de longo prazo**: o objetivo é valorização um pouco acima da Selic, em horizonte de anos, com diversificação. Nada disso convive com "realize 1% e gire". Os ativos dela também têm `usaSupervisao: false` (ver abaixo). |
+
+**A camada do SUPERVISOR costuma ter de sair junto.** Ela é escrita auditando as
+decisões de ENTRADA do analista de trade, e a seção `## Geral` dela vai para
+TODO ativo — o recorte por ativo só filtra as seções nominais. Na Toro isso foi
+pego antes de rodar: a v11 da camada mandava *"em posições no lucro sem
+`trava_lucro` armada, execute VENDER se houver perda da MM9 e MACD
+desacelerando"*, e como a trava nasce DESLIGADA lá, **todo** lote da Toro tem
+`trava_lucro: null` — a regra dispararia em 100% da carteira, vendendo papel de
+longo prazo por causa de uma média de 9 pregões. O flag é `usaSupervisao: false`
+no MANIFEST do ativo (não na plataforma), o mesmo das skins da Steam. **Ao criar
+uma plataforma com `usaRegrasGerais: false`, conferir também esta.**
+
+**Isto não afrouxa proteção nenhuma**: "nunca vender no prejuízo", stop-loss,
+folga do chão e orçamento vivem no Motor de Regras, em código — o prompt nunca foi
+o que segurava isso. O que muda é só o texto que a IA lê. Em compensação, **o
+template dessa plataforma precisa ser autossuficiente**: papel do analista, os
+limites dele (não calcula, não vê nada além do JSON, não executa), como decidir,
+como dimensionar e como se comunicar.
+
+**A parte que é fácil esquecer é a §3 das regras gerais — a descrição do JSON.**
+Ela não é enfeite: é onde o analista aprende que `posicoes_abertas` existe, que
+o `id` do lote tem de ser copiado EXATAMENTE para vender, que
+`lucro_liquido_se_vender_agora` já vem líquido de taxas e que `stop_loss: null`
+significa lote sem chão. Sem essa seção, o template pode estar cheio de estratégia
+e ainda assim produzir decisão malformada. Aconteceu na primeira versão do
+template da Toro: ele descrevia a tese inteira e **nunca dizia o que chegava no
+JSON** — 34 nomes de campo citados nas regras gerais não existiam nele. A régua
+para conferir isto é mecânica: extrair os identificadores entre crases de
+`.md/regras_gerais.md` e procurar cada um no template; o que sobrar ou é campo de
+SAÍDA (o `CONTRATO_SAIDA` cobre) ou é buraco de verdade. Os dois estão no repositório, e sobem para o
+Firestore por `publicar-regras.mjs`: `.md/regras_steam.md` e
+`.md/AgenteIA_Toro_AcoesBR.md`.
+
+**E prompt não segura o Motor.** Mudar o objetivo de uma plataforma no texto sem
+mexer na config produz uma IA que fala em anos enquanto a trava de lucro realiza
+o ganho num recuo de 1%. Na Toro, os padrões de ativo novo mudaram junto (§7.2):
+trava de lucro desligada, chão largo, análise a cada 6 h. **Regra geral: objetivo
+novo = template novo E config nova.** A LIQUIDAÇÃO (V8) ignora o flag de
+propósito: é ordem do dono e vale em toda plataforma.
 
 ---
 
@@ -992,6 +1242,30 @@ Decisão `AGUARDAR` (ou resposta inválida da IA) não gera operação nem rejei
   com os preços buscados em UMA chamada (`conector.precos`). Sem dados de
   patrimônio, o teto não se aplica (compra limitada só pelo caixa) — proteção
   dependente de dados nunca trava o sistema.
+- **O 100% é POR MODO (V8.14).** Uma plataforma tem ativos em simulação e em
+  real ao mesmo tempo, e o patrimônio de cada modo é uma grandeza diferente:
+  `calcularPatrimonioPlataforma` recebe `modo` e só soma os ativos daquele modo
+  (o caixa é o da carteira do modo). Logo **os simulados dividem 100% entre si e
+  os reais dividem outros 100%** — na BN de agosto/2026 a dashboard exibia 205%
+  com os reais somando os 100% corretos. Sem o filtro o teto saía inflado nos
+  dois sentidos: em real o mapa de saldos vem da corretora e traz as moedas dos
+  ativos que rodam em simulação (valor que o ativo real não pode usar); em
+  simulação a carteira virtual guarda a quantidade dos ativos reais como estava
+  na semeadura (operação real não a atualiza), e essa quantidade velha inchava o
+  teto dos simulados.
+- Trocar a base do patrimônio RE-ANCORA o circuit breaker: `patrimonio_inicio_dia`
+  é gravado com o carimbo `base` (`BASE_PATRIMONIO`, em `executor.js`, junto da
+  função que define a regra; `cicloAtivo.js` o re-exporta), e referência sem
+  carimbo ou com carimbo diferente é remedida no próximo ciclo. Sem isso o
+  patrimônio menor da V8.14 seria lido como queda de dezenas de por cento e
+  travaria as compras da plataforma até o dia virar — o mesmo estrago que a
+  re-âncora de depósito/saque (V8.12) existe para evitar.
+- O carimbo também vale para o PRINCIPAL do comparativo × CDI (V8.15). O
+  `patrimonio_inicial` de `global/renda_real` é fixado uma vez e nunca revisto —
+  então um principal medido sob a regra antiga ficaria congelado para sempre
+  dividindo o lucro REAL por um patrimônio que somava os dois modos. Agora ele
+  carrega `patrimonio_inicial_base`: sem o carimbo da regra atual, é descartado e
+  re-medido. Referência de plataforma sem o carimbo também é recusada.
 
 ---
 
@@ -1075,7 +1349,7 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   Determinística, sem IA: mantém o chão a `X%` abaixo do preço.
 - **Por que o Motor e não a IA**: a IA só é chamada quando o filtro de variação
   deixa. Medido na PBR/TT: 127 ciclos desde a compra para ~20 chamadas à IA — o
-  chão se moveu UMA vez enquanto o preço ia de 17,92 a 19,27 e voltava.
+  chão se moveu UMA vez enquanto o preço subia ~7,5% e voltava.
   Simulado sobre esse mesmo histórico, o trailing do Motor a 3% protegeria ~60%
   do avanço onde o arranjo sem ele entrega ~40%.
 - **Só age com a posição EM LUCRO** (`preco_atual > breakeven do lote`). Isso é
@@ -1239,9 +1513,8 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   a +6,7% (MB) — o que ninguém tinha feito era comparar esse número com o que os
   lotes de verdade fazem. **Zero** deles chegou lá. O trailing rodava, subia o
   chão e "funcionava", mas o chão nunca passava do preço de compra: todo lote
-  vencedor devolvia o movimento inteiro e morria no stop. Placar: 17 saídas por
-  stop contra 6 vendas no lucro, e o resultado somado das primeiras foi mais de
-  3× o das segundas — com o sinal trocado.
+  vencedor devolvia o movimento inteiro e morria no stop. Placar: 17 stops
+  (−36,54) contra 6 vendas no lucro (+11,23).
 - **A causa**: UM número fazendo dois trabalhos opostos. O chão que protege do
   prejuízo tem de ser LARGO (aguentar o ruído do dia); o que realiza lucro tem de
   ser ESTREITO (menor que o movimento típico). A V8.8 os fundiu na folga e
@@ -1283,10 +1556,59 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   posição, mais os dois percentuais em `configuracoes`. Sem isso ela continuaria
   tentando apertar o chão em lote vencedor (pedido que a folga recusa) em vez de
   entender que `AGUARDAR` ali é a decisão de deixar a trava trabalhar.
+- **A INVARIANTE: gatilho > devolução, e a V8.19 a faz valer.** Se a devolução
+  for maior ou igual ao gatilho, o lote arma em `breakeven × (1+g)` e a trava
+  pediria `breakeven × (1+g) × (1−d)`, que fica ABAIXO do empate quando
+  `d >= g`. O piso do breakeven segurava — e a trava nascia EXATAMENTE nele.
+  **Uma trava no empate nunca pode disparar**: a venda exige lucro líquido
+  positivo, e abaixo do breakeven não existe lucro. Ela ficava armada para
+  sempre, sem função.
+  Não era cosmético: o valor vai para a dashboard **e para o JSON da IA**, e o
+  prompt ensina que "AGUARDAR num lote com trava armada é deixar a trava
+  trabalhar" — ou seja, a trava morta fazia a IA segurar a posição esperando um
+  automático que não vinha, e ainda roubava dela a faixa do `trava_lucro: null`
+  em que ela DEVE decidir (regras gerais §4.1).
+  **Encontrada em 22/08/2026** num lote aberto do BN/BTC: pico de +0,48% sobre o
+  empate, trava armada em 404.310,42 = o breakeven exato, lote a −1,5% e nada
+  acontecendo. Quatro ativos do parque (BN/ETH, BN/SOL, MB/ETH, MB/SOL) estavam
+  com `gatilho <= devolucao` naquele dia. Agora `avaliarTravaLucro` **não arma**
+  quando o piso é quem venceria, e a tela ⚙ Parâmetros avisa em vermelho quando a
+  config viola a regra.
 - **A faixa que continua sendo dela**: lote em lucro com `trava_lucro: null` — o
   ganho é pequeno demais para a trava e o chão de proteção ainda está lá embaixo.
   Nada automático reage ali, e é onde `VENDER` vale mais. As regras gerais §4.1
   dizem isso com todas as letras.
+
+### 10.8.1 DE ONDE SAEM OS NÚMEROS: a calibração por amplitude (V8.13)
+
+Folga, trava e variação mínima **não são valores escolhidos a dedo** — saem de
+uma fórmula sobre a **amplitude diária MEDIANA MEDIDA** de cada ativo
+(30 dias de candles + a `volatilidade_24h` que o próprio bot gravou):
+
+| Parâmetro | Regra | Por quê |
+| :--- | :--- | :--- |
+| `stop_loss_trailing_percentual` (folga) | **1,3 × amplitude** | chão FORA do ruído de UM dia (lição da V8.8) |
+| `trava_lucro_devolucao_percentual` | **0,4 × amplitude** | realiza sem ser acionada por respiro |
+| `trava_lucro_gatilho_percentual` | **0,5 × amplitude** | > devolução, senão a 1ª realização sai no breakeven |
+| `percentual_minimo_variacao` | **amplitude ÷ 3** | ~3 chamadas de IA por amplitude de movimento |
+
+**Antes disso era um número igual para todos**, e o resultado está medido: com
+folga de 2% num ativo que oscila 3% ao dia, o chão vivia DENTRO do ruído (perde-se
+o lote inteiro) enquanto a trava cortava o ganho em 0,8% (realiza-se migalha).
+Perde 2,5%, ganha 1%.
+
+**O multiplicador depende do HORIZONTE, e a fórmula acima é a de TRADE.** Ela
+supõe posição que dura horas, em que o chão só precisa sobreviver a um dia. Numa
+carteira de PATRIMÔNIO (a Toro, §9.2) a posição dura meses, e um chão de um dia
+seria furado pela primeira semana ruim — lá a régua é **4 × amplitude**, que pelo
+passeio aleatório (amplitude × √dias) é o que o papel anda em ~10 pregões. Mesmo
+espírito, escala de tempo diferente.
+
+**Quem lê estes campos** é `folgaMinimaPercentual()` e `travaLucroConfig()` no
+`regrasEngine`, **direto da config do ativo** — não há recálculo em tempo de
+execução. Ou seja: a fórmula é aplicada UMA vez, por quem calibra, e o valor fica
+gravado. Recalibrar exige refazer a medição da amplitude (ver `diag-motor.mjs` e
+a §18 antes de varrer qualquer coisa).
 
 ### 10.9 KILL-SWITCH DA IA (V8.10) — desligar quem decide sem parar quem protege
 
@@ -1314,6 +1636,129 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   já respeita em todo ponto de envio. Vale em até 5 min (catálogo cacheado) e
   **não toca em nenhum toggle de evento** — religar devolve a configuração de
   antes. Furar o cache por esse botão custaria leitura no tick de 1 min.
+
+### 10.10 REENTRADA APÓS A SAÍDA DO MOTOR (V8.16) — quem vendeu não é quem decide o que vem depois
+
+- **O que mudou**: até a V8.15, `verificarSaidasAutomaticas` ENCERRAVA o ciclo
+  (`return stop`). Agora, quando a venda foi **executada**, o ciclo SEGUE e chama
+  a IA na mesma rodada, com `forcarAnalise` ligado.
+- **Por que** (números de produção até 20/08, `diag-motor.mjs`): das 22 vendas
+  pela trava de lucro, o preço estava MAIS ALTO 6 h depois em **17 de 21**
+  (+1,76% em média; +3,31% em 24 h). O robô ficava de fora sem ninguém ter
+  decidido ficar: a saída não move o baseline (`preco_ultima_analise`, e é certo
+  que não mova), então a próxima análise dependia de o preço andar o mínimo
+  **desde a última análise de verdade** — 8 h, 30 h e até 195 h de silêncio nos
+  casos medidos, e uma reentrada 15 h depois pagando 9,84% a mais (ETH/BN, 19/08).
+- **A pergunta muda de lugar, não de dono**: quem vende continua sendo o Motor, a
+  IA nunca é consultada sobre a venda, e quando ela é chamada **o lote já saiu da
+  carteira** — o cenário traz `posicoes_abertas` sem ele. A regra imutável 4
+  continua intacta e nenhuma via de venda nova foi criada.
+- **As duas portas que continuam fechando o ciclo ali**:
+  · plataforma **ASSISTIDA** — a "venda" virou recomendação (`sugerida`) e o lote
+    continua ABERTO; não há reentrada a decidir, e seguir empilharia uma segunda
+    recomendação sobre a primeira;
+  · **IA desligada** (§10.9) — quem protege continua, quem decide está desligado.
+- **O que a IA recebe** (§6.1): `saida_automatica_recente` com `motivo`
+  (`TRAVA_DE_LUCRO` | `STOP_LOSS`), `horario`, `preco_da_venda`,
+  `quantidade_vendida`, `resultado_liquido` e `saidas_automaticas_24h` — este
+  último tirado da query de operações que o ciclo JÁ fazia (nenhuma leitura nova).
+- **A camada de prompt é do CÓDIGO** (`montadorPrompt.blocoSaidaAutomatica`), não
+  editável pela dashboard, pelo mesmo motivo do bloco da liquidação: o número que
+  ela carrega é medido pelo bot, e um template reescrito não pode fazer a IA achar
+  que ainda tem posição aberta. Entra por último, só antes do CONTRATO_SAIDA.
+- **Ela fala diferente conforme o motivo, e isso é o coração da versão**:
+  · **trava de lucro** → a saída foi por lucro e a tese pode seguir de pé;
+    COMPRAR é resposta legítima, com o custo da ida e volta pesado contra o
+    movimento à frente;
+  · **stop-loss** → o chão foi furado, ou seja, a tese foi invalidada pelo preço;
+    o padrão é **AGUARDAR** e reentrar exige sinal NOVO. Os dados justificam a
+    assimetria: depois de um stop o preço é cara-ou-coroa (subiu em 15 de 24), e
+    em 29/07 dois stops na AAPL foram recomprados 48 h depois 10% mais barato —
+    ali o chão salvou dinheiro, e recomprar por reflexo teria destruído.
+  · **2 ou mais saídas em 24 h** → acrescenta o aviso de mercado serrando a
+    posição, onde AGUARDAR é quase sempre o certo.
+- **Rastro**: o retorno do ciclo carrega `saida_automatica` inteira (motivo +
+  operação + avaliação) porque o `tipo` virou `'analise'` — sem isso, quem chama
+  perderia de vista a posição fechada no mesmo minuto. No heartbeat a rodada
+  aparece como `BN/BTC:trava_lucro+analise`. O histórico grava as DUAS entradas: a
+  da venda (`chamou_ia: false`) e a da análise.
+- **Custo**: uma chamada de IA por saída automática executada — 46 em 24 dias de
+  produção, ~2 por dia.
+- **Ao mexer na reentrada, preservar**: a IA nunca decide a venda do Motor (os testes que
+  provam isso conferem que o cenário dela chega com `posicoes_abertas` vazio, não
+  que a IA não foi chamada); assistida e IA desligada continuam encerrando o
+  ciclo na saída; e o contador de 24 h continua saindo da query já existente —
+  uma leitura nova aqui é leitura no caminho quente (V5.2).
+
+### 10.11 PROVA DE EXECUÇÃO (V8.21) — "conectado" não é o mesmo que "opera"
+
+- **O que estava errado**: o ✅ de conexão sempre veio de `saldos()`, que é uma
+  chamada de LEITURA. Em 13/08/2026 a chave da Binance autenticava para ler e
+  **não tinha permissão de negociar**; a tela mostrou "conectado" por dias
+  enquanto a única ordem real voltava `HTTP 401 -2015`. O dono só soube porque
+  alguém leu o `motivo_erro` de uma operação antiga.
+- **Por que isso é grave e não cosmético**: sem permissão de ordem o robô não
+  compra e **também não vende** — inclusive a venda do stop-loss e a da trava de
+  lucro. A proteção inteira depende de uma permissão que ninguém conferia.
+- **A prova**: método OPCIONAL `podeExecutar({ par })` no contrato dos
+  conectores, com o mesmo gate por CAPACIDADE da Steam e da Toro. Usa o caminho
+  que a corretora oferece para testar SEM criar ordem: `POST /api/v3/order/test`
+  na Binance, o **dry-run** na Tastytrade (o mesmo que o conector já faz para
+  capturar as taxas). O MB não tem endpoint equivalente e por isso não
+  implementa — ausência de capacidade nunca é falha.
+- **Quando roda**: dentro da MESMA verificação horária de conexão
+  (`verificarConexaoPlataforma`) e **só depois de a leitura passar** — com a
+  credencial fora do ar o teste falharia por autenticação e acusaria "não opera"
+  quando o problema é outro. Nenhuma leitura de Firestore nova; uma chamada
+  autenticada a mais por hora por plataforma.
+- **TRÊS estados, e a fronteira entre dois deles é o desenho inteiro**:
+  `true` = a ordem passaria; **`false` = PROVA de que a chave lê e não opera**
+  (alarme, laranja na tela, aviso no Telegram com chave própria `execucao:{P}`);
+  **`null` = falta de prova** (rede, filtro de tamanho, saldo, pregão) — a tela
+  diz "autenticada" e o Telegram fica em SILÊNCIO. Só `-2015`, `-2014`, `-1022`,
+  `-2008` e HTTP 401/403 viram `false`. **Um alarme que dispara à toa é pior que
+  alarme nenhum**: erro de filtro é problema NOSSO, e rede instável avisando de
+  hora em hora treinaria o dono a ignorar a mensagem que importa.
+- **O par testado** sai de `parParaProvaDeExecucao` (pura, em `orquestrador.js`):
+  prefere ativo REAL e ligado — é onde a falta de permissão custa dinheiro —,
+  depois qualquer ligado, depois o primeiro com par.
+- **Ao mexer aqui, preservar**: `podeExecutar` NUNCA lança e NUNCA cria ordem (os
+  testes conferem que o endpoint de ordem de verdade não é tocado); os campos
+  `pode_executar`/`erro_execucao` são gravados SEMPRE, mesmo sem resposta (o
+  merge não apaga chave de mapa — lição da V8.12, e um `false` velho ficaria na
+  tela para sempre); o gate é a CAPACIDADE do conector, nunca o nome da
+  plataforma (§16); e `null` jamais pode virar alarme.
+
+### 10.12 ALERTA DE OPORTUNIDADE (V8.22) — em plataforma assistida, o Motor para de contar o caixa
+
+- **O que é**: em plataforma ASSISTIDA (`assistida: true` — Toro e Steam) a
+  aprovação do Motor nunca vira ordem: vira um recado que o dono lê e executa (ou
+  não) à mão. O `cicloAtivo` passa `recomendacao: true` ao `avaliar()`, e com ele
+  **as regras que protegem o CAIXA saem do caminho**: item 1 na COMPRA (saldo,
+  orçamento livre, mínimo de ordem) e item 4 (circuit breaker de perda diária).
+- **Por que**: o "caixa" dessas plataformas é `carteira_manual.saldo_moeda`, um
+  número que o DONO digita e quase nunca atualiza (na Toro estava simbólico,
+  com um valor de meses antes). Com ele, **nenhuma oportunidade de compra jamais chegava à tela** — e
+  alerta de oportunidade é a única coisa que uma plataforma assistida produz. Os
+  orçamentos da Toro também são os pesos que a carteira JÁ tem, então o
+  "orçamento livre" é zero e calaria o aviso pelo segundo caminho.
+- **O princípio, e é ele que decide o que fica de fora**: sai o que protege o
+  DINHEIRO SAINDO DA CONTA (nada sai — o robô não tem API ali). **Fica tudo o que
+  protege a QUALIDADE da decisão**: divergência de preço, ordens abertas,
+  stop-loss obrigatório na compra e — o mais importante — **a regra imutável 4**.
+  Nunca se RECOMENDA vender no prejuízo, porque o recado empurra uma venda de
+  verdade; `tests/alertaOportunidade.test.js` guarda isso.
+- **A compra vira alerta SEM TAMANHO**: `ordem.valor` e `quantidade` vão `null`.
+  O robô não sabe quanto há na corretora, e inventar um total seria pior que não
+  dizer nada. O que viaja é `percentual_ia` → `percentual_sugerido` na operação e
+  na recomendação: "a IA sugere alocar X% do que você decidir aplicar". O aviso
+  do Telegram troca de texto ("Oportunidade — você decide se executa") e a
+  dashboard mostra a fatia no lugar do valor. **A VENDA continua com tamanho** —
+  são os lotes que existem de verdade.
+- **Ao mexer aqui, preservar**: o gate é `plataforma.assistida`, nunca um nome de
+  plataforma (§16); a plataforma que EXECUTA não muda em nada (teste da compra
+  normal que precise ser afrouxado significa mudança errada); e nenhuma regra de
+  VENDA pode entrar nessa lista de dispensas — a dispensa é só do caixa.
 
 ---
 
@@ -1363,6 +1808,25 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   posição externa com custo-base = preço de mercado da detecção (conservador),
   vendável pela IA quando der lucro. Saque/venda manual → abate primeiro das
   externas, depois FIFO; posição zerada fecha.
+- **POEIRA (V8.20) — sobra que a corretora não aceita de volta NÃO vira
+  posição.** Toda venda real na Binance trunca a quantidade ao `stepSize` do par,
+  então sempre fica um resto na conta; até 22/08/2026 esse resto virava posição
+  `externa`, a trava de lucro armava nele e o Motor pedia a cada ciclo uma ordem
+  que a corretora recusa — **234 operações com `status: erro` em dois dias, 90%
+  do histórico de BN/BNB e BN/SOL**, por sobras de alguns reais e de alguns
+  centavos. O conserto tem duas
+  camadas: `reconciliarComSaldo` não abre posição para sobra abaixo do mínimo
+  (ela é reportada em `poeira`, continua no saldo, e vira posição normalmente
+  quando crescer até passar do mínimo), e `regrasEngine.ordemAbaixoDoMinimo`
+  impede os TRÊS caminhos de venda de montarem ordem abaixo do mínimo — na trava
+  e no stop em silêncio, devolvendo "aguardar", porque era a gravação por ciclo
+  que produzia o lixo. **Ao mexer aqui, preservar:** o critério é o VALOR
+  (`minimo_ordem_valor`) e não a quantidade — `minimo_ordem_quantidade` é
+  digitado à mão e estava 100× abaixo do lote real da Binance, ou seja o filtro
+  existia e não filtrava nada; e o mínimo vale sobre o TOTAL da ordem, nunca
+  sobre o lote isolado, porque lotes pequenos vendidos JUNTOS somam uma ordem
+  válida e é assim que a poeira sai da carteira (aconteceu em BN/SOL nos dias 19
+  e 20/08). `tests/poeira.test.js` guarda o contrato.
 - No modo real, venda com falha/fill não confirmado devolve as posições a
   `MONITORANDO`; a reconciliação do ciclo seguinte corrige o livro, e a regra
   de ordens abertas bloqueia execuções enquanto houver ordem pendente.
@@ -1387,6 +1851,13 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   por ativo (com indicador ligado/desligado) e "Plataforma e template" por
   plataforma. Rotas no hash (`#/geral`, `#/regras`, `#/supervisao`, `#/steam`,
   `#/ativo/MB/BTC`, `#/plataforma/MB`).
+- **A Steam fica FORA da Visão geral** — nem na tabela de ativos, nem no
+  patrimônio, nem na linha de lucro por moeda do card × CDI. Dinheiro de
+  carteira de jogo não pode aparecer ao lado de dinheiro que se saca: sugeriria
+  capital aplicável. Na tabela o corte é explícito (a plataforma tem tela
+  própria e um inventário de dezenas de skins afogaria os ativos financeiros);
+  no card × CDI a régua é genérica — **moeda listada em `moedas_sem_cambio` não
+  é exibida**, sem nenhum `if` por nome de plataforma.
 - **Tela "Steam" (`#/steam`)**: a plataforma STEAM tem tela PRÓPRIA e NÃO
   aparece na lista de plataformas — o que importa nela é o inventário, não
   chaves de corretora. Mostra os tiles (itens, valor, quantos são analisados,
@@ -1402,6 +1873,68 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   tela de ativo dele (`#/ativo/STEAM/{id}`) — é lá que ficam a recomendação da
   IA, as posições e o formulário para registrar a compra/venda feita na Steam,
   tudo reaproveitado do modo assistido da V6.
+- **PATRIMÔNIO CONSOLIDADO: só dinheiro REAL** (V8.17,
+  `dashboard/public/patrimonio.js`). O maior número da tela somava carteira
+  VIRTUAL junto da real, e de forma NÃO DETERMINÍSTICA — o caixa de cada moeda
+  era o do snapshot mais recente, que ora era o da conta real da BN ora o da
+  carteira virtual da MESMA BN, quase 40% maior. Junto morreu um segundo defeito:
+  o caixa era acumulado por MOEDA e não por PLATAFORMA, então BN, MB e TORO (as
+  três em BRL) se sobrescreviam e dois dos três caixas sumiam do total. A conta
+  virou módulo PURO com 9 testes (`tests/patrimonio.test.js`), incluindo o
+  retrato de produção do dia em que o defeito foi achado. **A tabela de ativos
+  continua mostrando TODOS os ativos, com o selo do modo** — é lá que a simulação
+  aparece; o que ela não faz é somar dinheiro que não existe ao total.
+- **Tela "⚙ Parâmetros" (`#/parametros`, V8.16)**: UMA tabela com todos os
+  ativos (uma linha cada, na mesma ordem da Visão geral) e todos os parâmetros da
+  config (uma coluna cada), incluindo os dois interruptores de operação — ligado
+  e simulação × real. Substituiu o cartão "Configurações do ativo" da tela do
+  ativo, que sobrevive lá só como um ponteiro para cá. **O motivo é a decisão que
+  a tela apoia**: orçamento, folga e trava são escolhas ENTRE ativos, e um
+  formulário por tela obrigava a decorar o número de um para digitar o do outro.
+  Três regras do desenho: a célula mexida fica destacada e **nada é gravado sem o
+  botão**; só o campo ALTERADO é escrito (merge por campo — ativo que nunca teve
+  um parâmetro não ganha um por aparecer na tabela); e a coluna do nome fica
+  grudada na esquerda, porque na décima coluna ninguém sabe mais de que ativo é a
+  linha. A **soma dos orçamentos** fica logo abaixo da tabela, no MESMO cartão —
+  não num cartão separado: ela muda enquanto se digita, e aviso fora do campo de
+  visão é aviso que não existe. Acima de 100% o vermelho aparece em DOIS lugares
+  (a linha da soma e as próprias células de orçamento daquele grupo), porque uma
+  linha de texto sozinha não compete com uma tabela de 17 colunas. A conta mora
+  em `dashboard/public/orcamentos.js` — módulo PURO, sem DOM e sem Firebase,
+  pelo mesmo motivo do `limiteLogin.js`: é a única conta da dashboard que decide
+  algo visível, ela já sumiu uma vez ao mudar de tela, e agora tem teste
+  (`tests/orcamentos.test.js`, 8 casos — inclusive o de marcar "Simulação", que
+  MOVE o ativo de grupo e muda os dois totais no mesmo clique). **Defeito que
+  morreu junto**: o formulário antigo exibia os dois campos da trava de lucro e
+  nunca os gravava.
+- **Botão "⚡ Analisar agora"** (tela do ativo, V8.16): grava
+  `analise_solicitada_em` no doc do ativo e a marca de config mudada. O bot
+  atende no minuto seguinte, furando o intervalo E o filtro de variação — senão a
+  análise pedida sairia como "sem variação". Fora do pregão o pedido espera o
+  mercado abrir.
+- **"Patrimônio da plataforma" mora na tela da PLATAFORMA** (V8.16): o número
+  sempre foi dela, não do ativo. A série é montada juntando o `historico` de
+  todos os ativos da plataforma (100 pontos por ativo, assinatura refeita quando a
+  lista de ativos chega — que é DEPOIS da rota, quando a página abre direto em
+  `#/plataforma/XX`), com seletor Real/Simulação: as duas carteiras têm 100% de
+  orçamento cada uma, e uma linha só desenharia um zigue-zague entre grandezas
+  diferentes. Sem escolha do dono, mostra o modo com o dado mais recente.
+- **O NOME da plataforma no menu é o link para a tela dela** (V8.16); o item
+  "⚙ Plataforma e template" que ficava embaixo saiu. Eram dois caminhos para o
+  mesmo lugar, e o de baixo ficava colado no primeiro ativo da plataforma
+  seguinte — que é onde o olho errava.
+- **Histórico de operações mostra 10 linhas** (V8.16). A assinatura continua
+  trazendo 50: é ela que alimenta os marcadores do gráfico de preço, que sumiriam
+  com um corte na origem.
+- **"Relatório de decisões" saiu da Visão geral** (V8.16). Ele continua sendo
+  gerado e enviado no Telegram a cada 7 dias — que é onde o dono de fato o lê.
+- **Botão "⏸ Pausar análises" na tela da Steam** (V8.16): grava
+  `analises_pausadas` no doc da plataforma. Pausa só o ANALISTA — que é quem
+  gasta uma chamada de IA por item marcado, a cada rodada. Preços do inventário,
+  atualizações do CS2 e alertas de preço-alvo continuam. O campo é GENÉRICO e vale
+  para qualquer plataforma: o núcleo não conhece "STEAM" (§16). Para congelar a
+  plataforma inteira existe `ativa: false`; para parar tudo, a parada de
+  emergência.
 - **Moeda fora do padrão ISO**: `fmtMoeda` cai num formatador manual quando o
   `Intl` recusa o código (a carteira Steam é `BRLS`, de 4 letras). Sem isso,
   abrir a tela de um item derrubaria a página inteira com um `RangeError` — o
@@ -1469,9 +2002,13 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
   (COMPRA/VENDA: quantidade, preço, data, taxa opcional; DIVIDENDO V6.3: valor
   por ação → fila `operacoes_manuais`) + tile **"Dividendos recebidos"**
   (informativo, só para ativos que pagam dividendo).
-- **Tela da plataforma**: STATUS da plataforma (autenticação ✅/❌ testada de
-  hora em hora pelo bot + estado do pregão com próxima abertura, ambos de
-  `dados/estado`), chaves de API (mascaradas; campos montados POR CONECTOR —
+- **Tela da plataforma**: STATUS da plataforma — **QUATRO estados desde a V8.21
+  (§10.11), não dois**: ✅ autenticada e apta a operar · ⚠️ **lê mas NÃO envia
+  ordens** (laranja, com o motivo — foi o estado invisível que custou dias em
+  13/08) · ✅ autenticada, sem prova de execução (o MB não tem como provar) ·
+  ❌ fora do ar. Testado de hora em hora pelo bot, junto do estado do pregão com
+  próxima abertura, ambos de `dados/estado`; a conta que decide a cor é o módulo
+  PURO `dashboard/public/conexaoStatus.js`. Mais chaves de API (mascaradas; campos montados POR CONECTOR —
   MB: token id/secret; TT: client id/secret + refresh token + conta; campo
   vazio mantém a atual), cadeia de modelos da IA, **cadastro de novo ativo**
   (ticker + nome → nasce desligado, em simulação e com orçamento 0%) e editor
@@ -1501,7 +2038,7 @@ da IA (ela vê um ativo por chamada): isso é o `orcamento_percentual` do dono.
 ```bash
 npm start        # bot 24/7 (carrega .env se existir)
 npm run test:rules  # regras do Firestore contra o emulador (exige Java) — 9 casos
-npm test         # 532 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO/STEAM, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado; STEAM fase 1 (2026-08-05): dinheiro formatado lido certo nas duas convenções (e separador único com 3 casas é MILHAR, não decimal — errar isso erraria o preço por mil vezes), preço ilegível vira null e nunca zero, itens iguais viram UMA linha com quantidade somada, item não negociável ENTRA na lista marcado, 429 INTERROMPE a varredura de preços, o rodízio dá a volta na lista, o preço de quem ficou fora da fatia é preservado com a data dele, o retrato NÃO guarda se o item é analisado, Steam fora do ar não lança e mantém o retrato anterior, e o conector NUNCA envia ordem nem devolve candle vazio; STEAM fase 2 (2026-08-05): a novidade sai do `gid` e nunca da data ou do título, a PRIMEIRA leitura não avisa nada, sem novidade não há escrita no banco, feed de site parceiro fica de fora, o ouvinte respeita o intervalo do dono, Steam fora do ar não lança — e o BBCode REAL das notas do CS2 (colchete escapado, `[/*]`, `[p]` dentro do item de lista) vira texto legível, com o teste montado a partir de uma nota de produção; STEAM fase 3 (2026-08-05): o ciclo de um ativo `usaIndicadores: false` NÃO pede candle e manda os indicadores como null EXPLÍCITO, a série própria ignora ponto cedo demais e responde `null` — nunca 0 — na janela que ainda não cobre, a plataforma da Steam não recebe as regras gerais **enquanto todas as outras continuam recebendo** (o caso que protege o sistema inteiro), template vazio ali não cai na semente de ativo financeiro, a liquidação ignora o flag, a camada de notícias entra antes do CONTRATO_SAIDA, e notícia nova FURA o filtro de variação uma vez; ALERTA DE PREÇO-ALVO fase 5 (2026-08-05): dispara UMA vez por travessia e rearma quando o preço volta — item parado abaixo do alvo não vira aviso por hora —, preço exatamente no alvo conta como cruzado, item sem preço legível não dispara nada (null não é zero), e o alvo do dono nunca é tocado pelo estado que o bot grava no mesmo documento; TRAVA DE LUCRO V8.11 (tests/travaLucro.test.js): a trava NUNCA fica abaixo do breakeven — nem com devolução absurda —, só arma depois de o PICO passar do gatilho, só sobe, ruído abaixo de 0,1% não vira escrita, gatilho ou devolução em 0 a desliga por completo, lote sem lucro na hora da venda NÃO é vendido por ela (o caso de produção que motivou a versão: trava armada acima da compra, preço já de volta ao vermelho, nada sai), o stop-loss tem precedência quando os dois disparam, e a regressão que prova o conserto — com a folga ANTIGA de 5% o chão nem chega ao preço de compra num movimento de 4%, e mesmo assim a trava realiza)
+npm test         # 656 testes (indicadores, validador, Motor, cadeia de IA, posições, simulador, migração, núcleo, conectores TT/BN/TORO/STEAM, modo assistido + dividendo manual informativo, renda × CDI real+simulação com lucro multi-moeda convertido em BRL + Selic/% do CDI manuais, câmbio, validade do contexto, parada de emergência, catálogo V5.2, lucro realizado com taxa efetiva da corretora, STOP-LOSS V6.6: chão obrigatório na compra + truncamento no teto + disparo determinístico antes do filtro de variação + trailing só-para-cima, elevado ao breakeven real quando cairia na faixa de prejuízo por taxa + marcação da venda no banco; TRAILING DO MOTOR: sobe o chão sozinho em ciclo que nem chama a IA, nunca age fora do lucro, percentual da posição > config > padrão, e breakeven pela taxa de compra EFETIVA; AVISOS no Telegram: formatação de cada evento, o contrato de NUNCA lançar, toggles por evento e a trava anti-spam por chave; RELATÓRIO DE DECISÕES: risco:retorno pelo chão inicial, ASSIMETRIA realizada (ganho médio ÷ perda média — a régua que funciona sem o chão inicial, com os números reais de produção dentro do teste) que nunca cruza moedas, dinheiro nunca somado entre moedas, delta de contadores resistente a reset e formatação sem amostra; SUPERVISOR SEMANAL V7.2: a camada recusada por tamanho/formato/revogação mantém a anterior, o recorte por ativo não vaza nota de um ativo para outro, a camada entra depois das regras gerais e antes do CONTRATO_SAIDA, a janela de quota do Pacífico, a régua dos 7 dias pelo gerado_em persistido, o kill-switch tira a camada sem apagar nada e IA fora do ar não muda prompt nenhum; MODO VENDAS V8: a rampa de tolerância como função pura do relógio (0% no dia 1, teto no fim da janela, platô depois), COMPRAR bloqueado no Motor, a tolerância por posição sobre o custo do lote, o prompt de liquidação SUBSTITUINDO as regras gerais e tirando a camada do supervisor, o supervisor pausado inclusive contra o botão "rodar agora", o lembrete diário no Telegram e — o mais importante — que com o modo DESLIGADO nada mudou; FREIO DO LOGIN V7.4: as tentativas livres, a espera dobrando até o teto, o esquecimento que impede erro antigo de punir hoje, e o princípio de que storage corrompido NUNCA tranca o dono; PICO E CAPTURA V8.5: o pico sobe com o preço e nunca desce, ruído abaixo de 0,1% não vira escrita, lote sem avanço fica FORA da amostra em vez de virar zero, o relatório antigo (sem o campo) não quebra a formatação, e o reset ABORTA quando o bot não confirma a parada; ESCOPO DO CACHE (2026-07-26): doc global lido uma vez serve todos os ativos, template compartilhado dentro da plataforma e nunca entre plataformas, prompt/contexto continuam por ativo, e `camadasPromptCache` entrega todas as camadas que o montador espera; FOLGA MÍNIMA DO CHÃO V8.8: chão colado no preço é ALARGADO na compra (nunca rejeitado — rejeitar pararia o robô) e DESCARTADO em ajuste de posição que já tem chão (o chão largo continua), posição sem chão recebe o primeiro alargado, a folga é configurável pelo dono e nunca passa do teto de distância, o trailing do Motor virou o chão mais ALTO que o sistema admite — a IA não aperta mais nada em posição vencedora —, e no ciclo REAL o pedido a 1,8% do preço é recusado enquanto o de 3,4% em lote fora do lucro é aplicado; STEAM fase 1 (2026-08-05): dinheiro formatado lido certo nas duas convenções (e separador único com 3 casas é MILHAR, não decimal — errar isso erraria o preço por mil vezes), preço ilegível vira null e nunca zero, itens iguais viram UMA linha com quantidade somada, item não negociável ENTRA na lista marcado, 429 INTERROMPE a varredura de preços, o rodízio dá a volta na lista, o preço de quem ficou fora da fatia é preservado com a data dele, o retrato NÃO guarda se o item é analisado, Steam fora do ar não lança e mantém o retrato anterior, e o conector NUNCA envia ordem nem devolve candle vazio; STEAM fase 2 (2026-08-05): a novidade sai do `gid` e nunca da data ou do título, a PRIMEIRA leitura não avisa nada, sem novidade não há escrita no banco, feed de site parceiro fica de fora, o ouvinte respeita o intervalo do dono, Steam fora do ar não lança — e o BBCode REAL das notas do CS2 (colchete escapado, `[/*]`, `[p]` dentro do item de lista) vira texto legível, com o teste montado a partir de uma nota de produção; STEAM fase 3 (2026-08-05): o ciclo de um ativo `usaIndicadores: false` NÃO pede candle e manda os indicadores como null EXPLÍCITO, a série própria ignora ponto cedo demais e responde `null` — nunca 0 — na janela que ainda não cobre, a plataforma da Steam não recebe as regras gerais **enquanto todas as outras continuam recebendo** (o caso que protege o sistema inteiro), template vazio ali não cai na semente de ativo financeiro, a liquidação ignora o flag, a camada de notícias entra antes do CONTRATO_SAIDA, e notícia nova FURA o filtro de variação uma vez; ALERTA DE PREÇO-ALVO fase 5 (2026-08-05): dispara UMA vez por travessia e rearma quando o preço volta — item parado abaixo do alvo não vira aviso por hora —, preço exatamente no alvo conta como cruzado, item sem preço legível não dispara nada (null não é zero), e o alvo do dono nunca é tocado pelo estado que o bot grava no mesmo documento; REENTRADA APÓS A SAÍDA DO MOTOR V8.16 (§10.10): a venda do Motor NÃO encerra mais o ciclo quando foi executada — a IA é chamada em seguida para decidir a reentrada, e os testes provam que ela nunca decidiu a venda (o cenário dela chega com `posicoes_abertas` vazio); plataforma assistida e IA desligada continuam encerrando o ciclo na saída; a camada de prompt muda de texto conforme o motivo (trava × stop) e avisa quando houve 2+ saídas em 24 h; ANALISAR AGORA e PAUSA DE ANÁLISES por plataforma: a marca do dono fura o intervalo e o filtro de variação, vale UMA vez só, e plataforma pausada não roda ativo nenhum; SOMA DOS ORÇAMENTOS da tela ⚙ Parâmetros (tests/orcamentos.test.js): a conta é por plataforma E por modo, o valor DIGITADO entra antes de salvar, marcar "Simulação" move o ativo de grupo e muda os dois totais, campo vazio conta como 0 e 100% exatos não acende o vermelho; TRAVA DE LUCRO V8.11 (tests/travaLucro.test.js): a trava NUNCA fica abaixo do breakeven — nem com devolução absurda —, só arma depois de o PICO passar do gatilho, só sobe, ruído abaixo de 0,1% não vira escrita, gatilho ou devolução em 0 a desliga por completo, lote sem lucro na hora da venda NÃO é vendido por ela (o caso REAL da PBR: trava armada em 19,29, preço em 18,60, nada sai), o stop-loss tem precedência quando os dois disparam, e a regressão que prova o conserto — com a folga ANTIGA de 5% o chão nem chega ao preço de compra num movimento de 4%, e mesmo assim a trava realiza; POEIRA V8.20 (tests/poeira.test.js): sobra abaixo do mínimo da ordem NÃO vira posição mas também não some em silêncio, sobra que cresceu vira posição normalmente, sem preço ou sem config a posição nasce (na dúvida vale o comportamento antigo), os TRÊS caminhos de venda recusam a ordem pequena — o stop devolve AGUARDAR em vez de erro —, e dois lotes pequenos vendidos JUNTOS continuam passando, que é como a poeira sai da carteira; PROVA DE EXECUÇÃO V8.21 (tests/provaExecucao.test.js, §10.11): o -2015 do incidente real vira alarme, erro de FILTRO e queda de rede NÃO viram — ficam inconclusivos —, nenhum dos dois caminhos toca o endpoint que CRIA ordem, o valor do teste respeita o mínimo do par, o par testado é o do ativo REAL e ligado, e na tela o "lê mas não opera" é laranja enquanto "sem prova" continua ✅ sem alarme; ALERTA DE OPORTUNIDADE V8.22 (tests/alertaOportunidade.test.js, §10.12): o caixa simbólico da Toro rejeitava a compra e agora não cala mais o aviso — nem o orçamento livre zerado, nem o orçamento 0%, nem o circuit breaker —, a compra vira alerta SEM valor e sem quantidade, a fatia sugerida viaja como texto, o aviso do Telegram não promete total nenhum, a REGRA IMUTÁVEL 4 continua recusando venda no prejuízo mesmo no alerta, e a plataforma que EXECUTA não mudou uma vírgula)
 ```
 
 Requisito: **Node >= 22** (o conector da Tastytrade usa o WebSocket nativo
@@ -1613,9 +2150,9 @@ patrimônio USD⇄BRL.
 
 ## 15.1 COMO FALAR COM O DONO (regra de resposta — vale para TODA resposta)
 
-Resposta longa e cheia de jargão **não é resposta**: ela não é acionável, e o
-trabalho se perde. Escreva de forma direta, sem depender de vocabulário interno
-do código para a ideia principal chegar.
+O dono é hobbyista, não engenheiro. Resposta longa e cheia de jargão **não é
+resposta**: ele não consegue usar, e o trabalho se perde. Escreva como se
+explicasse para um amigo inteligente que não conhece o código.
 
 **Regras:**
 
@@ -1717,13 +2254,233 @@ manter o sistema, e o custo de um detalhe a menos é alto.
   query de posições abertas SEMPRE por `aberta_modo`, nunca por `modo`; nunca
   criar query sem limite/filtro em coleção que cresce (historico/operacoes/
   posicoes) nem leitura nova no tick de 1 min (multiplica por 1.440/dia).
+- **Diagnóstico gasta a MESMA cota de leitura que o bot (§18).** Toda query de
+  análise leva `limit()`, começa pelos documentos que o bot JÁ calcula
+  (`global/relatorio_decisoes` responde quase tudo por 1 leitura) e é estimada
+  antes de rodar (`ativos × limit`). Em 21/08/2026 um script de diagnóstico leu
+  3.000 documentos de histórico por ativo, estourou a cota e deixou o robô sem
+  conferir stop-loss por horas — o mesmo estrago do incidente de 14/08, por outra
+  porta.
 - **Antes de qualquer commit, conferir que nenhum segredo entrou em arquivo
   versionado** (`.env.example` só tem nomes de variáveis; chaves reais só em
   `.env`/Firestore). Já houve incidente com chaves coladas no `.env.example`.
+- **Existe uma CÓPIA PÚBLICA deste projeto, e a checagem "isto merece ir para
+  lá?" é SUA, não do dono (§17.1).** Repositório
+  `RodrigoEscobar541/trading-bot-ia-multicorretora`, criado em 2026-08-03 para o
+  currículo do dono. Ela NÃO acompanha sozinha: é cópia congelada, sem remoto em
+  comum com este repo. **Ao terminar qualquer trabalho aqui, rodar a checagem da
+  §17.1 e, se ela der SIM, dizer isso na resposta final — sem esperar que ele
+  pergunte.** O combinado explícito com o dono é que ele não vai lembrar disso:
+  se você não levantar, ninguém levanta, e a cópia envelhece calada. A receita da
+  sanitização está na §17.
 - Mudanças ambíguas de regra de negócio: perguntar ao usuário antes de assumir um comportamento.
 - Comentários, mensagens e documentação em PT-BR, seguindo o estilo dos módulos existentes.
 
 ---
+
+## 17. Cópia pública para portfólio (2026-08-03)
+
+Repositório **`RodrigoEscobar541/trading-bot-ia-multicorretora`** (público) —
+espelho deste projeto, criado para o currículo do dono. Tem o código e a
+documentação de engenharia COMPLETOS; não tem nada que aponte para a operação
+real. É **cópia congelada**: não compartilha remoto com este repositório e não
+se atualiza sozinha.
+
+### 17.1 A CHECAGEM — rodar ao fim de todo trabalho neste repo
+
+O dono pediu explicitamente para **não ter que se preocupar com isto**. Então a
+pergunta "esta mudança merece ir para a cópia pública?" é obrigação de quem
+mexeu no código, não dele. Rode a checagem ao FECHAR o trabalho (depois do
+commit, junto do relatório final), não no meio.
+
+**Responda estas cinco perguntas. UM "sim" já basta:**
+
+1. Fechei uma **versão nova** no ROADMAP (um `## ✅ Vx.y` novo)?
+2. Entrou **plataforma, conector ou ativo de um tipo novo**?
+3. Mexi nas **regras imutáveis da §4**, no `regrasEngine` ou em alguma das
+   exceções de venda no prejuízo (§10.2, §10.5, §10.7)?
+4. Nasceu **módulo novo** em `src/`, ou algum módulo mudou de responsabilidade?
+5. O **README público ficou desatualizado** — ele afirma número de testes,
+   quantidade de corretoras, de módulos ou de linhas, e algum desses mudou?
+
+**Deu SIM em alguma:** dizer ao dono, na resposta final, em UMA linha — qual
+gatilho bateu e o que iria para lá. Ele decide; publicar nunca é automático.
+Exemplo: *"Isso bateu o gatilho da cópia pública (conector novo). Quer que eu
+atualize o `trading-bot-ia-multicorretora`?"*
+
+**Deu NÃO em todas:** não dizer nada. Levantar o assunto a cada ajuste de config
+transformaria a checagem em ruído, e ruído é o que faz o dono parar de ler.
+
+Casos que são **NÃO** (para calibrar): ajuste de valor padrão na config,
+correção de texto de prompt ou de documento, teste novo sobre comportamento que
+já existia, correção de bug pequeno sem mudança de contrato, mexida em
+`scripts/` ou no deploy da VPS.
+
+**Não confie na memória para o "número de testes" da pergunta 5**: o README
+público afirma **510** (sincronizado em 2026-08-05). Conferir com `npm test` e
+comparar — o README afirma também o número de módulos, de linhas e de mercados.
+
+**Três armadilhas da sincronização, aprendidas em 2026-08-05:**
+
+1. **NUNCA copie o `README.md` daqui por cima do de lá.** São arquivos
+   diferentes: o de lá é a vitrine; o daqui corresponde ao `INSTALACAO.md` de lá.
+2. **Normalize CRLF antes de procurar texto para sanitizar.** Os arquivos deste
+   repositório estão em CRLF; um script que procure trechos com `\n` não casa
+   com nada e "sanitiza" zero linhas, em silêncio.
+3. **Depois de remover uma seção, procure as referências órfãs a ela.** Tirar a
+   `V8.9` do ROADMAP deixou dois ponteiros apontando para o vazio — e a própria
+   regra do cabeçalho ("sem buracos") passou a ser desmentida pelo arquivo.
+
+**Como atualizar**: copiar os arquivos VERSIONADOS deste repo (`git ls-files` —
+nunca a pasta inteira, que tem `.env` e service account), tirar o que a tabela
+abaixo manda tirar, rodar `npm test` na cópia e conferir com uma busca antes de
+publicar. O que precisa sair é sempre de uma destas quatro famílias:
+
+| O que sai | Por quê | Onde costuma estar |
+| :--- | :--- | :--- |
+| **Arquivos pessoais e rascunhos** | não descrevem o sistema | `.md/MeusConceitosDosInvesitmentos.md` (notas do dono sobre a própria carteira); scripts `diag-*.mjs` de uso único na raiz |
+| **Valor em dinheiro que descreve a carteira real** | expõe o tamanho e o resultado da operação | ROADMAP (o pior caso, ~30 pontos), MANUAL, CLAUDE, `.md/supervisor.md`. **Onde o número sustenta um argumento, virar PROPORÇÃO** (múltiplo do ganho médio, % do pico) — o raciocínio fica auditável e o valor não. Exemplo redondo de didática (`base R$ 10.000`, `três compras de R$ 100`) FICA |
+| **Ticker que identifica posição real** | idem | ROADMAP, onde o texto diz "posição real aberta em X". Ticker usado como EXEMPLO (unidade de cota, formato de par) fica — não afirma que alguém tem aquilo |
+| **Identificadores do ambiente** | um vira placeholder, não some | ver a tabela seguinte |
+
+**Os placeholders** — sem eles a cópia sobe em outro projeto Firebase por
+acidente, e o UID do dono fica público:
+
+| Arquivo | Valor real → placeholder |
+| :--- | :--- |
+| `dashboard/public/firebase-config.js` | config do app web → `seu-projeto` / `COLE_AQUI_...` |
+| `.firebaserc` | id do projeto → `seu-projeto-firebase` |
+| `firestore.rules`, `dashboard/public/app.js`, `tests/rules/firestoreRules.test.js` | UID do dono → `COLE_AQUI_O_UID_DO_DONO`. **Os três têm de ser IDÊNTICOS** — o teste de regras autentica com esse UID e prova que ele bate com as rules |
+| `.github/workflows/firebase-deploy.yml` | id do projeto → `${{ vars.FIREBASE_PROJECT_ID }}`, e o gatilho vira `workflow_dispatch` (num repo sem o secret, push só produziria deploy vermelho) |
+| `publicar-regras.mjs` | nome do JSON da service account → genérico |
+| CLAUDE/MANUAL/ROADMAP | `<seu-projeto>.web.app` no lugar da URL do painel (o texto de substituição tem o MESMO tamanho, para não desalinhar a arte ASCII da §2) |
+
+**O que a cópia tem A MAIS** e este repo não: `README.md` de vitrine (princípios,
+fluxo, tabela de problema real × solução), `INSTALACAO.md` (o que era o README
+daqui) e `LICENSE` (MIT + aviso de que o software manda ordem de verdade).
+
+**A conferência final, antes de publicar** — buscar na cópia inteira por: UID do
+dono, `AIzaSy`, id do projeto, prefixos de token (`gho_`, `ghp_`,
+`github_pat_`, `-----BEGIN`), e-mail, IP, os tickers reais e `R$`/`US$` seguido
+de número. Nenhum segredo jamais esteve versionado neste projeto (`.env` sempre
+ignorado, `.env.example` só com nomes — conferido também no histórico), e é isso
+que permite publicar a árvore atual sem reescrever histórico. **A cópia nasce com
+`git init` e commit inicial próprio: os commits daqui não vão para lá**, e é de
+propósito — mensagem de commit deste repo cita números de produção.
+
+## 18. COMO RESPONDER "COMO O ROBÔ ESTÁ INDO?" (leia ANTES de escrever qualquer diagnóstico)
+
+O dono pede análise com frequência: *"está dando lucro?"*, *"a IA acerta mais do
+que erra?"*, *"e se o mercado cair?"*. Esta seção existe para que a resposta saia
+**sem derrubar o robô** — porque já derrubou.
+
+### 18.1 A regra: diagnóstico gasta a MESMA cota que o bot
+
+**O plano gratuito do Firestore tem 50 mil leituras por dia, e elas são
+compartilhadas entre o bot e qualquer script que você rodar.** O bot consome
+~2,7 mil/dia. O resto parece folga — e não é: um script que varra
+`historico` de todos os ativos consome dezenas de milhares numa única execução.
+
+**Incidente de 2026-08-21, e ele foi causado por um diagnóstico, não pelo bot.**
+Para medir a exposição do robô ao mercado, um script leu 3.000 documentos de
+histórico POR ATIVO. Com 14 ativos, ~42 mil leituras de uma vez. A cota estourou
+e o bot ficou **cego por horas**: sem ler o Firestore, ele não confere stop-loss
+nem trava de lucro, e **as posições abertas ficam sem chão** até a cota renovar
+(meia-noite do Pacífico). É o mesmo estrago do incidente de 14/08 — de outra
+porta.
+
+**As três regras que saem disso:**
+
+1. **Toda query de diagnóstico tem `limit()`.** Sem exceção. `historico`,
+   `operacoes` e `posicoes` crescem para sempre.
+2. **Comece pelo que já está calculado** (§18.2). Quase toda pergunta que o dono
+   faz já tem resposta pronta num documento único.
+3. **Estime antes de rodar**: `nº de ativos × limit`. Se passar de ~2 mil, corte
+   a amostra ou reduza os ativos. Uma medição com 100 documentos por ativo
+   responde quase tudo que uma com 3.000 responderia.
+
+### 18.2 Comece aqui: o que o BOT já calcula (1 leitura cada)
+
+Antes de varrer coleção, leia estes. Eles custam **uma leitura** e cobrem a
+maioria das perguntas:
+
+| Documento | O que responde | Campos que importam |
+| :--- | :--- | :--- |
+| `global/relatorio_decisoes` | **a maior parte das perguntas de desempenho** | `decisoes` (COMPRAR/VENDER/AGUARDAR do período), `fechamentos` (por motivo, com resultado), `rr` (risco:retorno realizado), `assimetria` por moeda (`ganho_medio`, `perda_media`, `razao`, `taxa_acerto`, `esperanca`), `captura` (quanto do pico o lote entregou), `por_moeda.lucro_realizado` e `taxas_pagas` |
+| `global/renda_real` | o robô ganha do CDI? | rendimento por período, real e simulação, com o principal considerado |
+| `plataformas/{P}/ativos/{A}/dados/estatisticas_{modo}` | placar do ativo | `lucro_total`, `taxa_acerto`, `maior_lucro_operacao`, `maior_prejuizo_operacao`, contagem de operações |
+| `plataformas/{P}/ativos/{A}/dados/dashboard` | foto de AGORA | `carteira_atual` (caixa, quantidade, preço, `lucro_nao_realizado`, `modo`) |
+| `plataformas/{P}/ativos/{A}/dados/estado` | o que a IA decidiu por último | `ultima_decisao_ia`, `decisoes_acumuladas`, `horario_ultima_analise` |
+| `global/status_bot` | o bot está vivo? que código roda? | `atualizado_em`, `commit`, `travado`, `ia_desligada`, `ultima_rodada` |
+
+**A assimetria e o risco:retorno do relatório são exatamente as métricas que
+respondem "a IA acerta mais do que erra?"** — e elas já estão prontas. Refazer
+essa conta varrendo o histórico é gastar cota para chegar no mesmo número.
+
+### 18.3 Quando precisar varrer mesmo: onde cada coisa mora
+
+| Pergunta | Coleção | `limit` sugerido | Por quê |
+| :--- | :--- | ---: | :--- |
+| O que foi comprado/vendido, e por quem | `ativos/{A}/operacoes` | 50–100 | tem `origem_decisao` (`ia`, `motor_stop_loss`, `motor_trava_lucro`, `ia_modo_vendas`), `lucro_liquido`, `status` |
+| Como os lotes fecharam | `ativos/{A}/posicoes` | sem limite, mas é a MENOR das três | `fechada_por`, `preco_compra`, `preco_maximo`, `stop_loss_inicial`, `abertura`/`fechamento` |
+| O que o preço fez / o que a IA viu | `ativos/{A}/historico` | **100** | é a MAIOR de todas e cresce a cada ciclo. Foi ela que estourou a cota |
+| Ordens sombra da conta espelho | `ativos/{A}/contas/{C}/operacoes` | 20 | pequena, mas multiplica por conta |
+
+**Um atalho que evita a coleção grande:** para saber o que o preço fez, os
+próprios lotes já trazem `preco_compra`, `preco_maximo` e `preco_venda`. Muita
+análise de "o preço subiu depois?" sai de `posicoes`, que é dezenas de
+documentos, em vez de `historico`, que é dezenas de milhares.
+
+### 18.4 A pergunta que o número solto não responde: LUCRO × MARÉ
+
+Medido em 21/08, com 25 dias de amostra: o robô rendeu **+58,54** enquanto
+comprar-e-segurar o mesmo capital renderia **+238,91**. Em TODOS os 12 ativos que
+subiram, o robô ficou atrás de não fazer nada; nos 2 que caíram, ficou à frente.
+
+**A leitura certa disso não é "a IA erra".** Nos dois sentidos ele captura
+~20–25% do movimento — o que descreve **exposição**, não acerto de direção. O
+sistema compra fatias pequenas, realiza cedo pela trava e passa boa parte do
+tempo em caixa.
+
+**CONFIRMADO em 22/08 pela medição que faltava** (`diag-exposicao.mjs`, 126
+leituras, mesma janela de 25 dias, todas as carteiras menos a Toro):
+
+| Régua | Valor |
+| :--- | ---: |
+| **Exposição média de capital** | **12,8%** do patrimônio |
+| Tempo com ao menos 1 lote aberto (média por ativo) | 36,7% |
+
+Por carteira: MB simulação 19,1% · BN simulação 18,8% · TT simulação 8,5% · BN
+real 3,1%. **Capturar ~24% do movimento estando ~13% exposto não é erro de
+direção — é o contrário**: por unidade de capital exposto o robô rendeu quase o
+dobro do mercado. O que limita o resultado é o tamanho da aposta, não a escolha
+do lado.
+
+Duas ressalvas que a média esconde e que qualquer releitura precisa carregar:
+**o pico é muito maior que a média** (BN/BTC chegou a quase 100% do patrimônio
+aplicado num único momento), e **a carteira assistida fica FORA desta conta**: o
+caixa dela é informativo e digitado à mão, o que faria a exposição dar mais de
+2.000%; além disso os quatro papéis dela nasceram em 21/08 e só cobrem 6,7% da
+janela.
+
+**Consequência para qualquer análise futura:** um resultado positivo em mercado
+de alta não prova nada sozinho. **Sempre compare com o que teria acontecido sem
+fazer nada** — é uma conta barata (preço do primeiro e do último ponto da
+amostra) e é o que separa decisão de maré. E, antes de concluir que a IA erra a
+direção, **meça a exposição**: a mesma pergunta sai de `posicoes` (dezenas de
+documentos) sem tocar em `historico`.
+
+### 18.5 O que NUNCA fazer num diagnóstico
+
+- Varrer `historico` sem `limit`, ou com `limit` alto em muitos ativos.
+- Rodar o mesmo script várias vezes para "conferir" — cada execução paga de novo.
+- Diagnosticar em horário de pregão sem necessidade: se a cota estourar, é
+  justamente quando as posições precisam do chão.
+- Deixar o script na raiz do repositório depois de usar. Os `diag-*.mjs` que
+  ficaram estão lá porque cada um sustenta um número citado no ROADMAP; um
+  script de uso único que não sustenta nada é lixo que a próxima sessão vai
+  rodar sem pensar.
+
 
 ## Git Commit Convention
 

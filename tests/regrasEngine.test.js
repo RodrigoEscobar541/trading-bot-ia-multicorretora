@@ -117,6 +117,10 @@ test('COMPRAR aprovada calcula valor em centavos exatos', () => {
   assert.deepEqual(r.ordem, {
     tipo: 'COMPRA',
     valor: 1750,
+    // ALERTA DE OPORTUNIDADE (V8.22, §10.12): na plataforma que EXECUTA os dois
+    // campos nascem neutros — é o contrato de que nada mudou por aqui.
+    percentual_ia: null,
+    recomendacao: false,
     preco_execucao: 350000,
     stop_loss: 336000,
     stop_loss_motivo: 'abaixo do fundo recente',

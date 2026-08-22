@@ -36,7 +36,23 @@ import { log } from '../utils/logger.js';
 
 const arredondarValor = (v) => (v === null || v === undefined ? v : Math.round(v * 100) / 100);
 
-export const modoDoAtivo = (ativo) => (ativo.config.modo_simulacao ? 'simulacao' : 'real');
+// Carimbo da REGRA que mediu o patrimônio da plataforma. Mora aqui, ao lado de
+// `calcularPatrimonioPlataforma`, que é quem define a regra. Trocar este valor
+// obriga TODO MUNDO que guardou um patrimônio medido sob a regra antiga a
+// re-medir: o circuit breaker (`patrimonio_inicio_dia`, cicloAtivo.js) e o
+// principal do comparativo × CDI (`patrimonio_inicial`, rendaReal.js).
+// 'modo' = V8.14, patrimônio só com os ativos do modo.
+export const BASE_PATRIMONIO = 'modo';
+
+// Modo do ativo. `modo_simulacao` ausente é SIMULAÇÃO — a mesma leitura que a
+// dashboard, o supervisor e a renda real já faziam, e que este arquivo era o
+// único a contrariar (config sem o campo caía em REAL). Na prática o campo
+// nunca falta, porque toda leitura de ativo passa por `CONFIG_ATIVO_PADRAO`;
+// mas esta função escolhe se a ordem vai para a corretora ou para a carteira
+// virtual, e desde a V8.14 também de qual 100% de orçamento o ativo participa.
+// Nesses dois papéis, a falta de dado tem de cair do lado que não gasta
+// dinheiro real — e concordar com o que o dono vê na tela.
+export const modoDoAtivo = (ativo) => (ativo.config.modo_simulacao === false ? 'real' : 'simulacao');
 
 /**
  * Carteira do modo ativo, no formato usado pelo JSON da IA e pelo Motor:
@@ -60,11 +76,14 @@ export async function obterCarteiraAtiva({ plataformaId, ativo, conector, precoA
   const modo = modoDoAtivo(ativo);
   let saldoMoeda;
   let saldos;
+  let movimentacaoExterna = false;
   if (modo === 'simulacao') {
     let carteira = await garantirCarteiraVirtual(plataformaId, conector, estadoPlataforma);
     // Depósitos/saques feitos na conta real entram na simulação como delta
     // (melhor esforço — falha não interrompe a análise).
-    carteira = (await sincronizarComSaldosReais(plataformaId, conector, estadoPlataforma)) ?? carteira;
+    const sincronizacao = await sincronizarComSaldosReais(plataformaId, conector, estadoPlataforma);
+    carteira = sincronizacao.carteira ?? carteira;
+    movimentacaoExterna = sincronizacao.movimentacao_externa;
     saldoMoeda = carteira.saldo_moeda;
     saldos = { ...(carteira.saldos ?? {}) };
   } else {
@@ -81,6 +100,7 @@ export async function obterCarteiraAtiva({ plataformaId, ativo, conector, precoA
     modo,
     saldo: saldoAtivo,
     preco_atual: preco,
+    config: ativo.config,
   });
   posicoes = await atualizarCicloDeVida(plataformaId, ativo.id, posicoes, preco, ativo.config);
 
@@ -99,6 +119,10 @@ export async function obterCarteiraAtiva({ plataformaId, ativo, conector, precoA
     saldo_moeda: saldoMoeda,
     saldo_ativo: saldoAtivo,
     saldos, // mapa completo da plataforma (base do patrimônio/orçamento)
+    // Houve depósito/saque na conta real NESTA leitura? Só o circuit breaker usa
+    // (re-ancora a referência do dia — cicloAtivo §circuit breaker). Campo de
+    // runtime: não é persistido em lugar nenhum.
+    movimentacao_externa: movimentacaoExterna,
     preco_medio_compra: precoMedioDasPosicoes(posicoes), // informativo (dashboard)
     lucro_nao_realizado: arredondarValor(lucroNaoRealizado), // informativo (dashboard)
     posicoes_abertas: posicoes,
@@ -135,13 +159,28 @@ export async function prepararContextoExecucao({ ativo, conector }) {
 
 /**
  * Patrimônio da PLATAFORMA no modo (base do orçamento por ativo e do circuit
- * breaker): caixa + Σ (saldo de cada ativo cadastrado × preço atual), com os
- * preços buscados em UMA chamada (conector.precos). Ativos sem ticker na
+ * breaker): caixa + Σ (saldo de cada ativo **do mesmo modo** × preço atual),
+ * com os preços buscados em UMA chamada (conector.precos). Ativos sem ticker na
  * resposta ficam de fora (patrimônio subestimado = orçamento mais conservador).
  * Devolve { patrimonio, valor_por_ativo: { ATIVO: valor } }.
+ *
+ * O FILTRO POR MODO (V8.14) corrige um teto inflado: uma plataforma costuma ter
+ * ativos em SIMULAÇÃO e em REAL ao mesmo tempo (BN, agosto/2026: os orçamentos
+ * somavam 205%), e sem o filtro o patrimônio de um modo contava o dinheiro do
+ * outro. Em modo real o mapa `saldos` vem da corretora e traz também as moedas
+ * dos ativos que rodam em simulação — valor que o ativo real não pode usar, mas
+ * que aumentava o teto dele. Em simulação é o espelho: a carteira virtual guarda
+ * a quantidade dos ativos reais como estava na semeadura (operação real não mexe
+ * nela), e essa quantidade velha inchava o teto dos simulados. Com o filtro cada
+ * modo tem o seu próprio 100%.
+ *
+ * `modo` é obrigatório ('simulacao' | 'real'). Vindo vazio, nenhum ativo casa e
+ * o patrimônio fica só no caixa — direção segura de errar (teto MENOR, nunca
+ * maior), a mesma da regra dos ativos sem ticker.
  */
-export async function calcularPatrimonioPlataforma({ conector, saldoMoeda, saldos, ativos, precosConhecidos = {} }) {
-  const comSaldo = ativos.filter((a) => (saldos[a.id] ?? 0) > 0);
+export async function calcularPatrimonioPlataforma({ conector, saldoMoeda, saldos, ativos, modo, precosConhecidos = {} }) {
+  const doModo = ativos.filter((a) => modoDoAtivo(a) === modo);
+  const comSaldo = doModo.filter((a) => (saldos[a.id] ?? 0) > 0);
   const paresFaltando = comSaldo
     .filter((a) => !(a.id in precosConhecidos))
     .map((a) => a.manifest.par);
@@ -288,7 +327,15 @@ async function executarEregistrar({ plataformaId, ativo, conector, avaliacao, de
   // O livro de posições e a carteira manual ficam intocados até o dono
   // registrar a operação que de fato executou na corretora.
   if (assistida) {
-    const operacao = { ...registroBase, status: 'sugerida' };
+    const operacao = {
+      ...registroBase,
+      status: 'sugerida',
+      // Fatia que a IA sugeriu, em % (V8.22, §10.12). Na COMPRA a recomendação
+      // não tem valor nem quantidade — ela é um ALERTA, e quanto comprar é
+      // decisão de quem executa. Campo sempre presente (null quando não se
+      // aplica): ausente sumiria do JSON e a métrica passaria a mentir.
+      percentual_sugerido: avaliacao.ordem?.percentual_ia ?? null,
+    };
     await registrarOperacaoAtivo(plataformaId, ativo.id, operacao);
     await salvarDashboardAtivo(plataformaId, ativo.id, {
       recomendacao: {
@@ -297,6 +344,11 @@ async function executarEregistrar({ plataformaId, ativo, conector, avaliacao, de
         preco: operacao.preco,
         quantidade: operacao.quantidade,
         valor: operacao.valor,
+        // ALERTA DE OPORTUNIDADE (V8.22, §10.12): na COMPRA a recomendação não
+        // tem tamanho — o robô não sabe (nem precisa saber) quanto há em caixa
+        // na corretora. O que ela carrega é a fatia que a IA achou adequada, em
+        // %, para o dono traduzir em dinheiro na hora de executar.
+        percentual_sugerido: avaliacao.ordem?.percentual_ia ?? null,
         posicoes: operacao.posicoes,
         justificativa: decisao.justificativa ?? null,
         horario,

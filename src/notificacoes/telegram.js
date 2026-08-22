@@ -145,6 +145,22 @@ export function formatarOperacao({ plataformaId, ativoId, operacao, moeda = null
   const porStop = operacao.origem_decisao === 'motor_stop_loss';
 
   if (status === 'sugerida') {
+    // ALERTA DE OPORTUNIDADE (V8.22, §10.12): a COMPRA em plataforma assistida
+    // vem SEM tamanho — o robô não sabe quanto há em caixa na corretora, e
+    // fingir um total seria pior que não dizer nada. O texto muda junto, senão
+    // o dono lê "execute" e procura na mensagem um número que não existe.
+    if (operacao.quantidade == null && operacao.valor == null) {
+      const fatia = Number.isFinite(operacao.percentual_sugerido)
+        ? `\nFatia sugerida pela IA: <b>${operacao.percentual_sugerido}%</b> do que você quiser alocar.`
+        : '';
+      return (
+        `🔔 <b>Oportunidade — você decide se executa</b>\n` +
+        `${par}: <b>${escaparHTML(tipo)}</b> · preço de referência ${dinheiro(operacao.preco, moeda)}` +
+        fatia +
+        (operacao.justificativa_ia ? `\n\n<i>${escaparHTML(operacao.justificativa_ia)}</i>` : '') +
+        `\n\nO robô não envia ordem nesta corretora. Se executar, registre pela dashboard.`
+      );
+    }
     return (
       `🔔 <b>Recomendação — execute na corretora</b>\n` +
       `${par}: <b>${escaparHTML(tipo)}</b> ${num(operacao.quantidade, 8)} @ ${dinheiro(operacao.preco, moeda)}\n` +

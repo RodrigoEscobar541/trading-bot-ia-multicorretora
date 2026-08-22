@@ -148,6 +148,43 @@ export async function criarOrdemMercado(credenciais, { simbolo, lado, valor, qua
   return { orderId: String(orderId) };
 }
 
+// Valor do PEDIDO DE TESTE (§10.11), em USD: casa com o `minimo_ordem_valor`
+// com que os ativos da TT nascem. Nada é comprado — o dry-run só valida.
+const VALOR_TESTE = 5;
+
+/**
+ * PROVA DE EXECUÇÃO (§10.11) — a credencial consegue mesmo mandar ordem?
+ *
+ * Reaproveita o DRY-RUN que o conector já usa antes de toda ordem real: a
+ * corretora valida a ordem inteira e não cria nada.
+ *
+ * Devolve TRÊS estados, nunca lança:
+ *   { ok: true }  → a ordem passaria;
+ *   { ok: false } → a credencial foi RECUSADA (sem permissão de negociar);
+ *   { ok: null }  → não deu para saber (rede, pregão fechado, saldo).
+ *
+ * O corte entre `false` e `null` é o `autenticacao` do ErroTT — o mesmo sinal
+ * que o streamer de cotações usa para renovar o token (V8.15). Erro de
+ * validação de ordem NÃO é falta de permissão e não pode virar alarme.
+ */
+export async function testarOrdem(credenciais, { simbolo } = {}) {
+  if (!simbolo) return { ok: null, erro: 'sem par para testar' };
+  try {
+    const token = await autenticar(credenciais);
+    const contaId = await obterContaId(credenciais);
+    const corpo = montarOrdemMercado({ simbolo, lado: 'buy', valor: VALOR_TESTE });
+    await requisitar('POST', `/accounts/${contaId}/orders/dry-run`, {
+      token,
+      corpo,
+      ambiente: credenciais.ambiente,
+    });
+    return { ok: true, erro: null };
+  } catch (e) {
+    const recusada = e instanceof ErroTT && (e.autenticacao || e.status === 401 || e.status === 403);
+    return { ok: recusada ? false : null, erro: e?.message ?? String(e) };
+  }
+}
+
 // Mapa do status da Tastytrade para o vocabulário do contrato dos conectores.
 const STATUS_FINAL = {
   Filled: 'filled',

@@ -19,7 +19,7 @@ import {
 const PARQUE = [
   { id: 'MB', assistida: false, ativos: ['BTC', 'ETH'] },
   { id: 'BN', assistida: false, ativos: ['BTC'] },
-  { id: 'TORO', assistida: true, ativos: ['MXRF11', 'WRLD11'] },
+  { id: 'TORO', assistida: true, ativos: ['FIIR11', 'ETFG11'] },
 ];
 
 test('a plataforma ASSISTIDA fica de fora por padrão', () => {

@@ -26,11 +26,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // O UID abaixo é um PLACEHOLDER nesta cópia pública. Substitua pelo UID da
-    // sua conta (console do Firebase → Authentication → coluna "Identificador
-    // do usuário") em TRÊS lugares, que precisam concordar: aqui, em
-    // `dashboard/public/app.js` (UID_AUTORIZADO) e em
-    // `tests/rules/firestoreRules.test.js` (UID_DONO).
     function ehDono() {
       return request.auth != null
         && request.auth.uid == 'COLE_AQUI_O_UID_DO_DONO';
@@ -56,8 +51,26 @@ service cloud.firestore {
       allow read: if ehDono() && doc != 'api';
     }
 
+    // CONTAS ESPELHO (V8.18): contas adicionais da MESMA corretora, que recebem
+    // as ordens decididas para a conta principal. O doc da conta é legível (nome,
+    // flags) — a credencial dela mora em `contas/{c}/dados/api`, e vale a MESMA
+    // regra de `plataformas/{p}/dados/api`: gravável pela dashboard, nunca
+    // legível por ela.
+    //
+    // POR QUE NÃO É UM CAMPO NO DOC DA PLATAFORMA: `plataformas/{p}` é legível
+    // pelo navegador (regra acima). Uma lista de chaves ali seria exatamente o
+    // furo fechado em 2026-07-25, quando os segredos deixaram de trafegar até a
+    // tela. Credencial só existe em documento só-escrita.
+    match /plataformas/{plataforma}/contas/{conta} {
+      allow read, write: if ehDono();
+    }
+    match /plataformas/{plataforma}/contas/{conta}/dados/{doc} {
+      allow write: if ehDono();
+      allow read: if ehDono() && doc != 'api';
+    }
+
     // Ativos e tudo que pendura neles (dados/*, historico, operacoes,
-    // posicoes, operacoes_manuais) — nada aqui é segredo.
+    // posicoes, operacoes_manuais, contas/*) — nada aqui é segredo.
     match /plataformas/{plataforma}/ativos/{ativo} {
       allow read, write: if ehDono();
     }

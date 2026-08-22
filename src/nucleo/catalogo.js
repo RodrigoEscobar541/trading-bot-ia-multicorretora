@@ -4,7 +4,7 @@
 // orquestrador custava ~17 mil leituras de Firestore POR DIA com o bot ocioso.
 //
 // Regras (documentadas no V5_2_Plan.MD §7 — ler antes de mexer):
-//   - Edições da dashboard passam a valer em até CATALOGO_TTL_MS (5 min).
+//   - Edições da dashboard passam a valer em até CATALOGO_TTL_MS (15 min).
 //     Fluxos do BOT que escrevam um doc cacheado devem chamar
 //     invalidarCatalogo() após a escrita (a dashboard não precisa: o atraso
 //     de até 5 min é o comportamento documentado no MANUAL).
@@ -22,6 +22,8 @@
 import {
   listarPlataformas,
   listarAtivos,
+  listarContas,
+  obterApiConta,
   obterApiPlataforma,
   obterRegrasGerais,
   obterRegrasGeraisVenda,
@@ -34,8 +36,18 @@ import {
   obterTelegram,
 } from '../firebase/firebaseClient.js';
 
-/** Validade do cache — teto do atraso para edições feitas pela dashboard. */
-export const CATALOGO_TTL_MS = 5 * 60_000;
+/**
+ * Validade do cache — teto do atraso para edições feitas pela dashboard.
+ *
+ * 15 min desde a V8.14 (era 5): cada expiração relê ~28 documentos de
+ * configuração, o que dava ~8 mil leituras/dia só para reconfirmar dados que
+ * mudam quando o DONO edita a tela — algumas vezes por semana. A 15 min são
+ * ~2,7 mil. O preço é a edição demorar até 15 min para valer, e ele é pago de
+ * propósito: em 14/08/2026 a quota de leitura do plano gratuito estourou e o
+ * bot passou 3h45 sem analisar nada (ver `controleVivo.js`) — esperar por uma
+ * edição é incômodo, ficar cego é risco.
+ */
+export const CATALOGO_TTL_MS = 15 * 60_000;
 
 const cache = new Map(); // chave → { valor, lidoEm (epoch ms) }
 
@@ -56,6 +68,21 @@ export async function plataformasCache({ agoraMs = Date.now() } = {}) {
 /** Credenciais da plataforma (cacheado). */
 export async function apiCache(plataformaId, { agoraMs = Date.now() } = {}) {
   return lembrar(`api/${plataformaId}`, () => obterApiPlataforma(plataformaId), agoraMs);
+}
+
+/**
+ * Contas ESPELHO da plataforma (cacheado — V8.18). Lidas no tick, então passam
+ * pelo catálogo como todo o resto da configuração (invariante V5.2): sem isto,
+ * cada rodada pagaria uma leitura por plataforma só para saber que não há
+ * conta espelho nenhuma.
+ */
+export async function contasCache(plataformaId, { agoraMs = Date.now() } = {}) {
+  return lembrar(`contas/${plataformaId}`, () => listarContas(plataformaId), agoraMs);
+}
+
+/** Credenciais de uma conta espelho (cacheado, como as da plataforma). */
+export async function apiContaCache(plataformaId, contaId, { agoraMs = Date.now() } = {}) {
+  return lembrar(`api-conta/${plataformaId}/${contaId}`, () => obterApiConta(plataformaId, contaId), agoraMs);
 }
 
 /** Ativos da plataforma (cacheado). */

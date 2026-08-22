@@ -34,6 +34,23 @@ const TIMEOUT_MS = 15_000;
 const RECV_WINDOW_MS = 10_000;
 const CODIGO_TIMESTAMP_FORA_DA_JANELA = -1021;
 
+// Valor do PEDIDO DE TESTE (§10.11): só precisa passar do mínimo do par, e
+// nada é comprado — `/order/test` valida e descarta. Se o par exigir mais, o
+// filtro NOTIONAL do próprio símbolo manda.
+const VALOR_TESTE_PADRAO = 10;
+
+// Códigos da Binance que PROVAM que a chave não opera — é a resposta que a
+// conta deu em 13/08 enquanto a dashboard mostrava "conectado" (o -2015 diz,
+// na mesma frase, chave/IP/permissão). Qualquer outro erro é INCONCLUSIVO: um
+// filtro de tamanho ou uma queda de rede não podem virar alarme de permissão,
+// senão o aviso perde o valor e o dono para de olhar.
+const CODIGOS_SEM_PERMISSAO = new Set([
+  -2015, // Invalid API-key, IP, or permissions for action
+  -2014, // API-key format invalid
+  -1022, // Signature for this request is not valid
+  -2008, // Invalid Api-Key ID
+]);
+
 // Offset relógio local → servidor (ms), medido sob demanda e re-medido em -1021.
 let offsetRelogioMs = null;
 
@@ -195,6 +212,49 @@ export async function criarOrdemMercado(credenciais, { simbolo, lado, valor, qua
   const orderId = String(dados.orderId);
   ordensCriadas.set(orderId, dados);
   return { orderId };
+}
+
+/**
+ * PROVA DE EXECUÇÃO (§10.11) — a chave consegue mesmo mandar ordem?
+ *
+ * `POST /api/v3/order/test` é o endpoint que a própria Binance oferece para
+ * isto: valida assinatura, IP de origem, permissão de negociar e os filtros do
+ * par, e **não cria nada** (a ordem não chega ao livro). É por isso que dá para
+ * rodá-lo de hora em hora sem risco.
+ *
+ * Devolve TRÊS estados, nunca lança:
+ *   { ok: true }  → a ordem passaria;
+ *   { ok: false } → a chave lê mas NÃO opera (é o caso do incidente de 13/08);
+ *   { ok: null }  → não deu para saber (rede, filtro, saldo) — a dashboard
+ *                   mostra "não verificado", que é diferente de "não opera".
+ */
+export async function testarOrdem(credenciais, { simbolo } = {}) {
+  if (!simbolo) return { ok: null, erro: 'sem par para testar' };
+
+  let notional = VALOR_TESTE_PADRAO;
+  try {
+    const filtros = await obterFiltrosSimbolo(simbolo);
+    if (Number.isFinite(filtros.minNotional) && filtros.minNotional > notional) {
+      notional = filtros.minNotional;
+    }
+  } catch {
+    // Sem exchangeInfo: tenta com o padrão. Erro de filtro vira INCONCLUSIVO.
+  }
+
+  try {
+    await requisitarAssinado(credenciais, 'POST', '/order/test', {
+      symbol: simbolo,
+      side: 'BUY',
+      type: 'MARKET',
+      quoteOrderQty: notional.toFixed(2),
+    });
+    return { ok: true, erro: null };
+  } catch (e) {
+    const semPermissao =
+      e instanceof ErroBN &&
+      (CODIGOS_SEM_PERMISSAO.has(Number(e.codigo)) || e.status === 401 || e.status === 403);
+    return { ok: semPermissao ? false : null, erro: e?.message ?? String(e) };
+  }
 }
 
 // Status da Binance → status do contrato (working/filled/cancelled).

@@ -85,12 +85,30 @@ export { precoMinimoVendaLucrativa, breakevenPosicao } from '../regras/regrasEng
  *
  * - saldo MAIOR que a soma → ativo entrou por fora (compra manual/depósito):
  *   nova posição externa ao preço atual (mesma regra conservadora da
- *   inicialização da simulação). Sobras menores que o mínimo operacional
- *   viram posição mesmo assim (ficam aguardando — nunca somem em silêncio).
+ *   inicialização da simulação).
  * - saldo MENOR → ativo saiu por fora (saque/venda manual): abate primeiro das
  *   posições externas, depois das mais antigas (FIFO); posição zerada fecha.
+ *
+ * POEIRA (V8.20): sobra que a corretora NÃO aceitaria de volta numa ordem não
+ * vira posição. Até 22/08/2026 virava — "nunca some em silêncio" era a regra —,
+ * e o preço disso está medido: toda venda real na Binance trunca a quantidade
+ * ao `stepSize` do par, então SEMPRE fica um resto na conta. Esse resto virava
+ * uma posição `externa`, a trava de lucro armava nela e o Motor tentava
+ * vendê-la a cada ciclo, para sempre. Em dois dias foram 234 ordens com erro
+ * (`minQty 0.001`) em BN/BNB e BN/SOL — 90% do histórico de operações dos dois.
+ *
+ * O critério é o VALOR (`config.minimo_ordem_valor`), não a quantidade: o
+ * mínimo de quantidade da config é um número digitado à mão que diverge do
+ * lote real do par (0,00001 contra os 0,001 da Binance), enquanto o valor
+ * mínimo da ordem vale em qualquer corretora e em qualquer par.
+ *
+ * A sobra não some de vista: ela continua no saldo do ativo e é registrada em
+ * `poeira`, para o chamador logar. Quando ela cresce até passar do mínimo — por
+ * acúmulo ou por depósito novo —, a reconciliação abre a posição normalmente.
+ * Sem preço ou sem config não há como julgar, e aí vale o comportamento antigo:
+ * na dúvida, a posição nasce.
  */
-export function reconciliarComSaldo(posicoes, saldo, precoAtual) {
+export function reconciliarComSaldo(posicoes, saldo, precoAtual, config = null) {
   const abertas = posicoes.filter((p) => p.status !== 'FECHADA');
   const soma = arredondarQtd(abertas.reduce((s, p) => s + p.quantidade, 0));
   const delta = arredondarQtd(saldo - soma);
@@ -98,6 +116,14 @@ export function reconciliarComSaldo(posicoes, saldo, precoAtual) {
   if (Math.abs(delta) <= TOLERANCIA_QTD) return { nova: null, reducoes: [] };
 
   if (delta > 0) {
+    const minimoValor = Number(config?.minimo_ordem_valor);
+    const preco = Number(precoAtual);
+    const valor = delta * preco;
+    // `preco > 0` porque `Number(null)` é 0: sem preço, todo delta pareceria
+    // poeira e nenhum depósito voltaria a virar posição.
+    if (Number.isFinite(minimoValor) && minimoValor > 0 && preco > 0 && valor < minimoValor) {
+      return { nova: null, reducoes: [], poeira: { quantidade: delta, valor, minimo: minimoValor } };
+    }
     return { nova: { quantidade: delta, preco_compra: precoAtual }, reducoes: [] };
   }
 
@@ -145,6 +171,8 @@ export async function abrirPosicao({
   stop_loss = null,
   stop_loss_motivo = null,
   stop_loss_trailing_percentual = null,
+  // Conta ESPELHO (V8.18): `null` = a conta principal, no caminho de sempre.
+  conta = null,
 }) {
   const horario = abertura ?? timestampISO();
   const posicao = {
@@ -211,7 +239,7 @@ export async function abrirPosicao({
     fechada_por: null,
     atualizada_em: timestampISO(),
   };
-  await registrarPosicaoAtivo(plataforma, ativo, posicao);
+  await registrarPosicaoAtivo(plataforma, ativo, posicao, conta);
   log.info(`posição ${posicao.id} aberta (${origem}, ${modo})`, {
     plataforma,
     ativo,
@@ -229,8 +257,8 @@ const numeroOuNull = (v) => (Number.isFinite(v) ? v : null);
  * `aberta_modo` (só docs abertos saem do Firestore — V5_2_Plan.MD §4.1); o
  * filtro por status permanece como cinto de segurança.
  */
-export async function listarPosicoesAbertas(plataforma, ativo, modo) {
-  const abertas = await obterPosicoesAbertasAtivo(plataforma, ativo, modo);
+export async function listarPosicoesAbertas(plataforma, ativo, modo, conta = null) {
+  const abertas = await obterPosicoesAbertasAtivo(plataforma, ativo, modo, conta);
   return abertas
     .filter((p) => p.status !== 'FECHADA')
     .sort((a, b) => String(a.abertura).localeCompare(String(b.abertura)));
@@ -243,12 +271,12 @@ export async function listarPosicoesAbertas(plataforma, ativo, modo) {
  * (`regrasEngine.avaliarPicoPosicoes`), pelo mesmo motivo do stop-loss: a regra
  * fica num módulo puro e testável, e a persistência não julga nada.
  */
-export async function registrarPico(plataforma, ativo, id, { preco, horario = null }) {
+export async function registrarPico(plataforma, ativo, id, { preco, horario = null }, conta = null) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     preco_maximo: arredondarValor(preco),
     preco_maximo_em: horario ?? timestampISO(),
     atualizada_em: timestampISO(),
-  });
+  }, conta);
 }
 
 /**
@@ -258,17 +286,17 @@ export async function registrarPico(plataforma, ativo, id, { preco, horario = nu
  * (`regrasEngine.avaliarTravaLucro`), pelo mesmo motivo do stop-loss e do pico
  * — a regra fica num módulo puro e testável, e a persistência não julga nada.
  */
-export async function definirTravaLucro(plataforma, ativo, id, { trava_lucro, horario = null }) {
+export async function definirTravaLucro(plataforma, ativo, id, { trava_lucro, horario = null }, conta = null) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     trava_lucro: arredondarValor(trava_lucro),
     trava_lucro_em: horario ?? timestampISO(),
     atualizada_em: timestampISO(),
-  });
+  }, conta);
 }
 
 /** Marca um status pontual (ex.: VENDA durante a execução real). */
-export async function marcarStatus(plataforma, ativo, id, status) {
-  await atualizarPosicaoAtivo(plataforma, ativo, id, { status, atualizada_em: timestampISO() });
+export async function marcarStatus(plataforma, ativo, id, status, conta = null) {
+  await atualizarPosicaoAtivo(plataforma, ativo, id, { status, atualizada_em: timestampISO() }, conta);
 }
 
 /**
@@ -280,14 +308,14 @@ export async function marcarStatus(plataforma, ativo, id, status) {
  * baixar deixaria a IA adiar indefinidamente uma perda afrouxando o limite,
  * que é exatamente o viés que o stop existe para combater.
  */
-export async function definirStopLoss(plataforma, ativo, id, { stop_loss, motivo = null, horario = null }) {
+export async function definirStopLoss(plataforma, ativo, id, { stop_loss, motivo = null, horario = null }, conta = null) {
   const quando = horario ?? timestampISO();
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     stop_loss: arredondarValor(stop_loss),
     stop_loss_motivo: motivo || null,
     stop_loss_atualizado_em: quando,
     atualizada_em: timestampISO(),
-  });
+  }, conta);
   log.info(`stop-loss da posição ${id} definido em ${arredondarValor(stop_loss)}`, {
     plataforma,
     ativo,
@@ -304,11 +332,11 @@ export async function definirStopLoss(plataforma, ativo, id, { stop_loss, motivo
  * (CLAUDE.md §16: nada pode crescer sem limite). Recomenda-se UMA vez por
  * episódio: o flag é limpo quando o preço volta acima do chão.
  */
-export async function marcarStopRecomendado(plataforma, ativo, id, recomendadoEm) {
+export async function marcarStopRecomendado(plataforma, ativo, id, recomendadoEm, conta = null) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     stop_recomendado_em: recomendadoEm,
     atualizada_em: timestampISO(),
-  });
+  }, conta);
 }
 
 /**
@@ -318,11 +346,11 @@ export async function marcarStopRecomendado(plataforma, ativo, id, recomendadoEm
  * Campo separado do stop de propósito — são dois episódios independentes, e o
  * mesmo lote pode estar em um sem estar no outro.
  */
-export async function marcarTravaRecomendada(plataforma, ativo, id, recomendadaEm) {
+export async function marcarTravaRecomendada(plataforma, ativo, id, recomendadaEm, conta = null) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     trava_recomendada_em: recomendadaEm,
     atualizada_em: timestampISO(),
-  });
+  }, conta);
 }
 
 /**
@@ -336,6 +364,7 @@ export async function fecharPosicao(
   ativo,
   id,
   { preco_venda, taxa_venda = null, lucro_liquido, operacao_venda_id = null, fechada_por = null },
+  conta = null,
 ) {
   await atualizarPosicaoAtivo(plataforma, ativo, id, {
     status: 'FECHADA',
@@ -347,7 +376,7 @@ export async function fecharPosicao(
     operacao_venda_id,
     fechada_por,
     atualizada_em: timestampISO(),
-  });
+  }, conta);
 }
 
 /**
@@ -382,10 +411,15 @@ export async function atualizarCicloDeVida(plataforma, ativo, posicoes, precoAtu
  * (compra manual na plataforma, depósito, saque). MELHOR ESFORÇO: falha aqui
  * não derruba a análise. Devolve a lista de posições abertas já reconciliada.
  */
-export async function sincronizarPosicoesComSaldo({ plataforma, ativo, modo, saldo, preco_atual }) {
+export async function sincronizarPosicoesComSaldo({ plataforma, ativo, modo, saldo, preco_atual, config = null }) {
   let posicoes = await listarPosicoesAbertas(plataforma, ativo, modo);
   try {
-    const { nova, reducoes } = reconciliarComSaldo(posicoes, saldo, preco_atual);
+    const { nova, reducoes, poeira } = reconciliarComSaldo(posicoes, saldo, preco_atual, config);
+    if (poeira) {
+      // Não vira posição (§ POEIRA acima), mas também não some de vista: sem
+      // este aviso o saldo do ativo ficaria maior que o livro sem explicação.
+      log.info(`${ativo}: sobra de ${poeira.quantidade} abaixo do mínimo de ordem — fica fora do livro`, poeira);
+    }
     if (nova) {
       const aberta = await abrirPosicao({
         plataforma,

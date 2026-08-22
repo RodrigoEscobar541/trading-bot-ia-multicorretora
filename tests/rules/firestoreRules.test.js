@@ -15,8 +15,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-// Tem de ser IDÊNTICO ao UID de `firestore.rules` — é isso que estes casos
-// provam. Nesta cópia pública os dois são o mesmo placeholder.
 const UID_DONO = 'COLE_AQUI_O_UID_DO_DONO';
 
 // `firebase emulators:exec` define esta env. Sem ela não há emulador: os casos
@@ -70,6 +68,14 @@ test('SEGREDO: o dono GRAVA dados/api mas NUNCA consegue lê-lo', { skip }, asyn
   await assertFails(getDoc(doc(dono, 'plataformas/MB/dados/api')));
 });
 
+test('SEGREDO: a api da CONTA ESPELHO é gravável e nunca legível (V8.18)', { skip }, async () => {
+  // A credencial da conta do amigo tem exatamente a mesma proteção da chave
+  // principal. Foi por isso que ela virou subcoleção com `dados/api` em vez de
+  // um campo no doc da plataforma, que é legível pelo navegador.
+  await assertSucceeds(setDoc(doc(dono, 'plataformas/MB/contas/amigo/dados/api'), { bn_api_key: 'segredo' }));
+  await assertFails(getDoc(doc(dono, 'plataformas/MB/contas/amigo/dados/api')));
+});
+
 test('SEGREDO: o dono GRAVA global/telegram_token mas NUNCA consegue lê-lo', { skip }, async () => {
   await assertSucceeds(setDoc(doc(dono, 'global/telegram_token'), { bot_token: 'segredo' }));
   await assertFails(getDoc(doc(dono, 'global/telegram_token')));
@@ -118,6 +124,12 @@ const CAMINHOS_LEITURA = [
   'plataformas/MB/ativos/BTC/operacoes/op1',
   'plataformas/MB/ativos/BTC/posicoes/pos1',
   'plataformas/MB/ativos/BTC/operacoes_manuais/m1',
+  // CONTAS ESPELHO (V8.18): o doc da conta e o espelho mascarado são legíveis;
+  // a credencial dela NÃO é (teste próprio, logo abaixo).
+  'plataformas/MB/contas/amigo',
+  'plataformas/MB/contas/amigo/dados/estado',
+  'plataformas/MB/contas/amigo/dados/api_meta',
+  'plataformas/MB/ativos/BTC/contas/amigo/posicoes/pos1',
 ];
 
 test('o dono LÊ todos os caminhos que a dashboard usa', { skip }, async () => {

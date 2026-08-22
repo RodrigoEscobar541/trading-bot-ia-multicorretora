@@ -356,6 +356,110 @@ test('resolução desconhecida de candle lança ErroTT', async () => {
   await assert.rejects(() => obterCandles(CRED, 'AAPL', '42x', 10), ErroTT);
 });
 
+/**
+ * WebSocket falso que RECUSA o token nas primeiras `recusas` conexões e depois
+ * funciona — é o streamer respondendo `ERROR UNAUTHORIZED` a um token cuja
+ * sessão OAuth já morreu (o caso de 14/08/2026).
+ */
+function criarWebSocketQueRecusa(recusas, candlesPlanos) {
+  let conexoes = 0;
+  const WS = criarWebSocketFalso(candlesPlanos);
+  return class WebSocketRecusa extends WS {
+    constructor(url) {
+      super(url);
+      this.recusar = ++conexoes <= recusas;
+    }
+    send(texto) {
+      const msg = JSON.parse(texto);
+      if (this.recusar && msg.type === 'AUTH') {
+        this.responder({ type: 'ERROR', error: 'UNAUTHORIZED', message: 'Authentication failed' });
+        return;
+      }
+      super.send(texto);
+    }
+  };
+}
+
+test('DXLink recusou o token: pede um NOVO e a análise segue (V8.15)', async () => {
+  const t1 = Date.parse('2026-08-15T14:00:00Z');
+  let entregues = 0;
+  const chamadas = stubFetch({
+    'POST /oauth/token': rotaToken(),
+    'GET /api-quote-tokens': () => ({ token: `token-cotacao-${++entregues}`, 'dxlink-url': 'wss://falso' }),
+  });
+  const WS = criarWebSocketQueRecusa(1, ['AAPL{=15m}', t1, 1, 2, 0.5, 1.5, 10]);
+
+  const candles = await obterCandles(CRED, 'AAPL', '15m', 1, { WebSocketImpl: WS, quietudeMs: 20, timeoutMs: 2000 });
+
+  assert.equal(candles.length, 1); // a segunda tentativa entregou
+  // Dois tokens pedidos: o recusado e o novo. Sem isto, o token queimado ficaria
+  // no cache por 23 h e derrubaria TODA análise de TODO ativo da TT até vencer.
+  assert.equal(chamadas.filter((c) => c.chave === 'GET /api-quote-tokens').length, 2);
+});
+
+test('DXLink recusa SEMPRE: falha com erro de autenticação, sem martelar', async () => {
+  let entregues = 0;
+  const chamadas = stubFetch({
+    'POST /oauth/token': rotaToken(),
+    'GET /api-quote-tokens': () => ({ token: `token-cotacao-${++entregues}`, 'dxlink-url': 'wss://falso' }),
+  });
+  const WS = criarWebSocketQueRecusa(99, []);
+
+  await assert.rejects(
+    () => obterCandles(CRED, 'AAPL', '15m', 1, { WebSocketImpl: WS, quietudeMs: 20, timeoutMs: 2000 }),
+    (e) => {
+      assert.ok(e instanceof ErroTT);
+      // O erro precisa CHEGAR marcado como de autenticação: é isso que o
+      // distingue de "sem candles" no log e o que permitiria a quem chama
+      // decidir por conta própria. Ele falha por credencial, não por timeout.
+      assert.equal(e.autenticacao, true);
+      assert.match(e.message, /UNAUTHORIZED/);
+      return true;
+    },
+  );
+
+  // Exatamente DUAS tentativas: credencial de fato inválida não vira laço.
+  assert.equal(chamadas.filter((c) => c.chave === 'GET /api-quote-tokens').length, 2);
+});
+
+test('token de cotação é ancorado na sessão que o gerou, não em 23 h de relógio', async () => {
+  const t1 = Date.parse('2026-08-15T14:00:00Z');
+  let sessoes = 0;
+  let tokensCotacao = 0;
+  const chamadas = stubFetch({
+    // Cada autenticação devolve uma sessão DIFERENTE e já expirada, forçando o
+    // ttAuth a renovar na chamada seguinte.
+    'POST /oauth/token': () => ({ access_token: `token-acesso-${++sessoes}`, expires_in: 0 }),
+    'GET /api-quote-tokens': () => ({ token: `token-cotacao-${++tokensCotacao}`, 'dxlink-url': 'wss://falso' }),
+  });
+  const WS = criarWebSocketFalso(['AAPL{=15m}', t1, 1, 2, 0.5, 1.5, 10]);
+  const opcoes = { WebSocketImpl: WS, quietudeMs: 20, timeoutMs: 2000 };
+
+  await obterCandles(CRED, 'AAPL', '15m', 1, opcoes);
+  await obterCandles(CRED, 'AAPL', '15m', 1, opcoes);
+
+  // Sessão nova ⇒ token de cotação novo. O cache antigo (23 h de relógio) teria
+  // reaproveitado o primeiro, que morreu junto com a sessão que o pediu.
+  assert.equal(chamadas.filter((c) => c.chave === 'GET /api-quote-tokens').length, 2);
+});
+
+test('mesma sessão ⇒ token de cotação reaproveitado (o cache continua valendo)', async () => {
+  const t1 = Date.parse('2026-08-15T14:00:00Z');
+  let tokensCotacao = 0;
+  const chamadas = stubFetch({
+    'POST /oauth/token': rotaToken(), // sessão estável de 15 min
+    'GET /api-quote-tokens': () => ({ token: `token-cotacao-${++tokensCotacao}`, 'dxlink-url': 'wss://falso' }),
+  });
+  const WS = criarWebSocketFalso(['AAPL{=15m}', t1, 1, 2, 0.5, 1.5, 10]);
+  const opcoes = { WebSocketImpl: WS, quietudeMs: 20, timeoutMs: 2000 };
+
+  await obterCandles(CRED, 'AAPL', '15m', 1, opcoes);
+  await obterCandles(CRED, 'AAPL', '15m', 1, opcoes);
+
+  // UM só: a correção não pode virar uma chamada de token por análise.
+  assert.equal(chamadas.filter((c) => c.chave === 'GET /api-quote-tokens').length, 1);
+});
+
 // --------------------------------------- pregão heurístico configurável (núcleo)
 
 test('janela heurística de pregão aceita HH:MM da plataforma (NYSE 09:30–16:00)', () => {

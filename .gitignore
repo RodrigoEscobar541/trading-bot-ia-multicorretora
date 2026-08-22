@@ -34,3 +34,5 @@ backup_*.md
 # escreve não é resultado real, e o segundo reescreve agregados em produção.
 vitrine-demo.mjs
 reparar-vitrine.mjs
+lucro-ficticio.mjs
+posicao-ficticia.mjs

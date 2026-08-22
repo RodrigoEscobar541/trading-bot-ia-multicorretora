@@ -27,6 +27,15 @@
 //   6. Modo simulação NÃO interfere na aprovação (tratado no executor)
 //   7. Estado inconsistente / dados ausentes     → erro (log crítico de quem chama)
 //
+// ALERTA DE OPORTUNIDADE (V8.22, CLAUDE.md §10.12): com `recomendacao: true`
+// — ligado só em plataforma ASSISTIDA — a aprovação não vira ordem, vira um
+// recado para o dono executar (ou não) à mão. Como nenhum dinheiro sai da
+// conta, as regras que protegem o CAIXA saem do caminho: item 1 na COMPRA
+// (saldo, orçamento e mínimo de ordem) e item 4 (circuit breaker). **Todo o
+// resto continua**, inclusive o item 5 e a regra imutável 4 do CLAUDE: nunca
+// se RECOMENDA vender no prejuízo, porque o recado empurra uma venda de
+// verdade. A compra vira alerta SEM valor: quanto comprar é de quem executa.
+//
 // A sanidade dos dados (item 7) é verificada antes das demais por necessidade
 // prática (não dá para aplicar regra sobre NaN); quando mais de uma regra
 // falharia, o status reflete a PRIMEIRA da ordem oficial.
@@ -134,6 +143,34 @@ export function perdaToleradaPosicao(modoVendas, posicao) {
 // `config.minimo_ordem_quantidade` de cada ativo (V2_Plan.MD §B.6).
 export const MINIMO_ORDEM_VALOR_FALLBACK = 10;
 export const MINIMO_ORDEM_QUANTIDADE_FALLBACK = 0.00001;
+
+/**
+ * A ordem de venda é grande o bastante para a corretora aceitar? (V8.20)
+ *
+ * Vale para os TRÊS caminhos de venda, e é sobre o TOTAL da ordem, nunca sobre
+ * o lote isolado: lotes pequenos vendidos JUNTOS somam uma ordem válida, e foi
+ * assim que a poeira de BN/SOL saiu da carteira em 19 e 20/08 — pegando carona
+ * numa venda maior. Filtrar lote a lote quebraria essa limpeza.
+ *
+ * Por que o critério é VALOR e não quantidade: `minimo_ordem_quantidade` é um
+ * número digitado na config, e em produção ele estava 100× abaixo do lote real
+ * da Binance (0,00001 contra 0,001) — o filtro existia e não filtrava nada. O
+ * valor mínimo da ordem é a mesma grandeza em qualquer corretora e em qualquer
+ * par. Sem preço válido a checagem se abstém: proteção que depende de dado
+ * nunca bloqueia por falta do dado (§10.1).
+ */
+export function ordemAbaixoDoMinimo(posicoes, precoExecucao, config) {
+  if (!Array.isArray(posicoes) || posicoes.length === 0) return null;
+  if (!numeroValido(precoExecucao) || precoExecucao <= 0) return null;
+  const minimo = numeroValido(config?.minimo_ordem_valor)
+    ? config.minimo_ordem_valor
+    : MINIMO_ORDEM_VALOR_FALLBACK;
+  if (!(minimo > 0)) return null;
+  const quantidade = posicoes.reduce((s, p) => s + (Number(p?.quantidade) || 0), 0);
+  const valor = quantidade * precoExecucao;
+  if (!numeroValido(valor) || valor >= minimo) return null;
+  return { valor, minimo, quantidade };
+}
 
 // Divergência dinâmica (conhecimento-mercado.md (histórico git) §3): o limite configurado
 // (`percentual_max_diferenca_execucao`) é calibrado para um dia de
@@ -504,6 +541,25 @@ export function avaliarTravaLucro({ posicoes_abertas, preco_atual, config }) {
       Math.round(breakeven * 100) / 100,
     );
 
+    // TRAVA MORTA (V8.19): quando a devolução come todo o avanço, o piso do
+    // breakeven vence o `Math.max` e a trava nasce EXATAMENTE no empate. Uma
+    // trava ali **nunca pode disparar**: `posicoesComTravaFurada` só vende com
+    // lucro líquido positivo, e abaixo do breakeven não existe lucro. Ela
+    // ficaria armada para sempre, sem função nenhuma.
+    //
+    // Não é cosmético. O valor vai para a dashboard E para o JSON da IA, e o
+    // prompt ensina que "AGUARDAR num lote com trava armada é deixar a trava
+    // trabalhar". Armar uma trava morta faz a IA segurar a posição esperando
+    // uma realização automática que nunca vem.
+    //
+    // Acontece sempre que `gatilho <= devolucao`: o lote arma em
+    // `breakeven × (1+g)` e a trava pediria `breakeven × (1+g) × (1−d)`, que é
+    // MENOR que o breakeven quando `d >= g`. A calibração da V8.13 previu isso
+    // (gatilho 0,5 × amplitude > devolução 0,4 × amplitude), mas nada IMPEDIA
+    // uma config que violasse a regra — e em 22/08/2026 quatro ativos do parque
+    // estavam assim. Agora a trava só arma quando pode valer alguma coisa.
+    if (valor <= Math.round(breakeven * 100) / 100) continue;
+
     const vigente = numeroValido(p.trava_lucro) && p.trava_lucro > 0 ? p.trava_lucro : null;
     if (vigente !== null) {
       if (valor <= vigente) continue; // a trava só sobe
@@ -563,10 +619,15 @@ export function posicoesComTravaFurada({ posicoes_abertas, preco_atual, config }
 
     furadas.push({
       id: p.id,
+      quantidade: p.quantidade,
       trava_lucro: p.trava_lucro,
       lucro_liquido_previsto: Math.round(lucro * 100) / 100,
     });
   }
+  // Ordem pequena demais para a corretora (V8.20): não há venda possível, então
+  // não se monta decisão nenhuma. Sem isto, a trava armada num resto de venda
+  // pedia a mesma ordem impossível a cada ciclo — 234 erros em dois dias.
+  if (ordemAbaixoDoMinimo(furadas, preco_atual, config)) return [];
   return furadas;
 }
 
@@ -737,6 +798,19 @@ export function avaliarStopLoss({ posicoes_abertas, preco_atual, config, ordens_
       descartadas.length > 0
         ? `nenhum stop-loss executável (${resumirDescartes(descartadas)})`
         : 'nenhum stop-loss atingido',
+    );
+  }
+
+  // Ordem pequena demais para a corretora (V8.20): AGUARDAR, não erro. O chão
+  // foi furado de verdade, mas não existe ordem possível — insistir a cada
+  // ciclo só produziria uma operação com `status: erro` a cada 10 minutos, que
+  // foi exatamente o que aconteceu com a poeira de BN/BNB e BN/SOL.
+  const pequenaStop = ordemAbaixoDoMinimo(furadas, preco_atual, config);
+  if (pequenaStop) {
+    return resultado(
+      'aguardar',
+      `stop-loss atingido em ${furadas.length} posição(ões), mas a ordem somaria ${pequenaStop.valor.toFixed(2)} — ` +
+        `abaixo do mínimo de ${pequenaStop.minimo.toFixed(2)} que a corretora aceita`,
     );
   }
 
@@ -949,6 +1023,12 @@ export function avaliar({
   patrimonio_inicio_dia = null,
   modo_vendas = null,
   origem = null,
+  // ALERTA DE OPORTUNIDADE (V8.22 — §10.12). Ligado SÓ em plataforma
+  // assistida: a aprovação não vira ordem, vira um recado para o dono. Nenhum
+  // dinheiro sai da conta, então as regras que protegem o CAIXA (saldo,
+  // orçamento, mínimo de ordem, circuit breaker) não se aplicam — todas as
+  // outras continuam, inclusive a regra imutável 4 na venda.
+  recomendacao = false,
 }) {
   // --- item 7: sanidade dos dados (bloqueia qualquer avaliação sobre lixo) ----
   if (!decisao || typeof decisao !== 'object' || !ACOES.has(decisao.acao)) {
@@ -1013,36 +1093,45 @@ export function avaliar({
       return resultado('rejeitada_saldo', `percentual inválido: ${JSON.stringify(pct)}`);
     }
 
-    // Orçamento do ativo (V2_Plan.MD §A.3): percentual máximo do patrimônio da
-    // plataforma que este ativo pode ocupar. O percentual da IA aplica sobre a
-    // BASE = min(saldo em caixa, orçamento livre) — nunca sobre o caixa total.
-    let base = carteira.saldo_moeda;
-    let notaOrcamento = '';
-    const orcamentoPct = config.orcamento_percentual;
-    if (numeroValido(orcamentoPct)) {
-      if (orcamentoPct <= 0) {
-        return resultado('rejeitada_saldo', 'orçamento do ativo é 0% — configure orcamento_percentual antes de comprar');
-      }
-      if (numeroValido(patrimonio_plataforma) && numeroValido(valor_posicoes_ativo)) {
-        const teto = patrimonio_plataforma * (orcamentoPct / 100);
-        const livre = Math.max(0, teto - valor_posicoes_ativo);
-        if (livre < base) {
-          base = livre;
-          notaOrcamento = ` (orçamento livre do ativo: ${livre.toFixed(2)} de teto ${teto.toFixed(2)})`;
+    // ALERTA DE OPORTUNIDADE (V8.22, §10.12): em plataforma assistida a
+    // aprovação vira RECADO, não ordem. O caixa da corretora nem é conhecido
+    // pelo robô ali (`carteira_manual.saldo_moeda` é um número que o dono
+    // digita), e um caixa desatualizado calava o alerta de uma oportunidade
+    // real — que é justamente a única coisa que essas plataformas produzem.
+    // Sem valor não há tamanho: quanto comprar é decisão de quem executa.
+    let valor = null;
+    if (!recomendacao) {
+      // Orçamento do ativo (V2_Plan.MD §A.3): percentual máximo do patrimônio da
+      // plataforma que este ativo pode ocupar. O percentual da IA aplica sobre a
+      // BASE = min(saldo em caixa, orçamento livre) — nunca sobre o caixa total.
+      let base = carteira.saldo_moeda;
+      let notaOrcamento = '';
+      const orcamentoPct = config.orcamento_percentual;
+      if (numeroValido(orcamentoPct)) {
+        if (orcamentoPct <= 0) {
+          return resultado('rejeitada_saldo', 'orçamento do ativo é 0% — configure orcamento_percentual antes de comprar');
+        }
+        if (numeroValido(patrimonio_plataforma) && numeroValido(valor_posicoes_ativo)) {
+          const teto = patrimonio_plataforma * (orcamentoPct / 100);
+          const livre = Math.max(0, teto - valor_posicoes_ativo);
+          if (livre < base) {
+            base = livre;
+            notaOrcamento = ` (orçamento livre do ativo: ${livre.toFixed(2)} de teto ${teto.toFixed(2)})`;
+          }
         }
       }
-    }
 
-    // Percentual da base, com 2 casas (centavos).
-    const valor = Math.floor(base * pct) / 100; // pct% em centavos exatos
-    if (valor < minimoValor) {
-      return resultado(
-        'rejeitada_saldo',
-        `compra de ${pct}% da base disponível (${valor.toFixed(2)}) abaixo do mínimo de ${minimoValor.toFixed(2)}${notaOrcamento}`,
-      );
-    }
-    if (valor > carteira.saldo_moeda) {
-      return resultado('rejeitada_saldo', 'valor calculado excede o saldo em caixa disponível');
+      // Percentual da base, com 2 casas (centavos).
+      valor = Math.floor(base * pct) / 100; // pct% em centavos exatos
+      if (valor < minimoValor) {
+        return resultado(
+          'rejeitada_saldo',
+          `compra de ${pct}% da base disponível (${valor.toFixed(2)}) abaixo do mínimo de ${minimoValor.toFixed(2)}${notaOrcamento}`,
+        );
+      }
+      if (valor > carteira.saldo_moeda) {
+        return resultado('rejeitada_saldo', 'valor calculado excede o saldo em caixa disponível');
+      }
     }
 
     // Stop-loss obrigatório na compra (V6.6): toda posição nova nasce com o
@@ -1055,6 +1144,10 @@ export function avaliar({
     ordem = {
       tipo: 'COMPRA',
       valor,
+      // Só no alerta: o tamanho que a IA sugeriu, em % — vira texto na
+      // recomendação, nunca uma quantidade a executar.
+      percentual_ia: recomendacao ? pct : null,
+      recomendacao,
       preco_execucao,
       stop_loss: stop.stop_loss,
       stop_loss_motivo: decisao.stop_loss_motivo ?? null,
@@ -1099,6 +1192,17 @@ export function avaliar({
     if (candidatas.length === 0) {
       return resultado('rejeitada_saldo', `nenhuma posição executável na venda — ${resumirDescartes(descartadas)}`);
     }
+    // Ordem pequena demais para a corretora (V8.20): o mínimo de VALOR também
+    // vale na venda. Ele já valia na compra; faltava aqui, e era por essa fresta
+    // que uma sobra de R$ 0,08 virava ordem — recusada pela corretora, gravada
+    // como `erro`, e tentada de novo no ciclo seguinte.
+    const pequena = ordemAbaixoDoMinimo(candidatas, preco_execucao, config);
+    if (pequena) {
+      return resultado(
+        'rejeitada_saldo',
+        `venda de ${pequena.valor.toFixed(2)} abaixo do mínimo de ${pequena.minimo.toFixed(2)} da ordem`,
+      );
+    }
     const total = arredondarQuantidade(candidatas.reduce((s, p) => s + p.quantidade, 0));
     if (total > carteira.saldo_ativo + 1e-8) {
       return resultado(
@@ -1138,9 +1242,14 @@ export function avaliar({
   // patrimônio da plataforma caiu além do limite no dia, nenhuma compra nova
   // até o dia virar — impede o padrão de "aumentar posição para recuperar
   // perda". Vendas (sempre com lucro, regra 5) seguem permitidas.
+  // No ALERTA (§10.12) ele também não se aplica, pelo mesmo motivo do caixa:
+  // ninguém está aumentando posição para recuperar perda — o robô está
+  // avisando. E o dia de queda forte é exatamente quando uma carteira de
+  // patrimônio quer ouvir "apareceu oportunidade".
   const limitePerda = config.limite_perda_diaria_percentual;
   if (
     decisao.acao === 'COMPRAR' &&
+    !recomendacao &&
     numeroValido(limitePerda) && limitePerda > 0 &&
     numeroValido(patrimonio_atual) && numeroValido(patrimonio_inicio_dia) && patrimonio_inicio_dia > 0
   ) {

@@ -26,7 +26,7 @@ function validarCandles(candles, origem) {
 
 /**
  * Volume total negociado no período, na UNIDADE DO ATIVO (soma dos volumes dos
- * candles): bitcoins no BTC, ações na AAPL, cotas no MXRF11.
+ * candles): bitcoins no BTC, ações na AAPL, cotas no FIIR11.
  */
 export function volumeEmUnidades(candles) {
   validarCandles(candles, 'volumeEmUnidades');

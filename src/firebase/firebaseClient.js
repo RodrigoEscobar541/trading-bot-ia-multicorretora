@@ -62,6 +62,16 @@ function backendMemoria() {
     if (!colecoes.has(nome)) colecoes.set(nome, new Map());
     return colecoes.get(nome);
   };
+  // Observadores por documento (`${nome}/${id}` → Set de callbacks), para o
+  // modo memória entregar mudanças como o Firestore entrega — senão quem
+  // observa em desenvolvimento veria só o primeiro valor, para sempre.
+  const observadores = new Map();
+  const notificar = (nome, id) => {
+    const inscritos = observadores.get(`${nome}/${id}`);
+    if (!inscritos) return;
+    const doc = colecao(nome).get(id);
+    for (const fn of inscritos) fn(doc ? structuredClone(doc) : null);
+  };
   let contador = 0;
   return {
     tipo: 'memoria',
@@ -72,11 +82,21 @@ function backendMemoria() {
     async salvarDoc(nome, id, dados) {
       const atual = colecao(nome).get(id) ?? {};
       colecao(nome).set(id, mesclarProfundo(atual, structuredClone(dados)));
+      notificar(nome, id);
     },
     async adicionarDoc(nome, dados, id = null) {
       const docId = id ?? `auto_${String(++contador).padStart(6, '0')}`;
       colecao(nome).set(docId, structuredClone(dados));
+      notificar(nome, docId);
       return docId;
+    },
+    observarDoc(nome, id, aoMudar) {
+      const chave = `${nome}/${id}`;
+      if (!observadores.has(chave)) observadores.set(chave, new Set());
+      observadores.get(chave).add(aoMudar);
+      const doc = colecao(nome).get(id);
+      aoMudar(doc ? structuredClone(doc) : null); // 1ª entrega, como o Firestore
+      return () => observadores.get(chave)?.delete(aoMudar);
     },
     async listarDesde(nome, campo, valorMinimoISO) {
       return [...colecao(nome).values()]
@@ -163,6 +183,15 @@ async function backendFirestore() {
     async listarDocs(nome) {
       const snap = await db.collection(nome).get();
       return snap.docs.map((d) => ({ id: d.id, dados: d.data() }));
+    },
+    // Observação em tempo real de UM documento: custa 1 leitura ao anexar e 1 a
+    // cada MUDANÇA — não 1 por consulta. É o que tira o `global/controle` do
+    // caminho de 1.440 leituras/dia do tick (V8.14).
+    observarDoc(nome, id, aoMudar, aoFalhar) {
+      return db.collection(nome).doc(id).onSnapshot(
+        (snap) => aoMudar(snap.exists ? snap.data() : null),
+        (e) => aoFalhar?.(e),
+      );
     },
   };
 }
@@ -342,6 +371,11 @@ export const ESTADO_ATIVO_PADRAO = {
   horario_ultima_verificacao: null,
   proxima_analise_em: null,
   ultima_decisao_ia: null,
+  // Recuo do ciclo que falhou (V8.13): { em, consecutivas, erro }. null = o
+  // último ciclo terminou bem. Quem grava é o orquestrador; quem lê é o
+  // `deveAnalisarAgora` — o ciclo quebra ANTES do carimbo de horário, e sem
+  // esta marca o ativo com erro persistente é retentado a cada tick.
+  falha_ciclo: null,
 };
 
 /** Estado padrão de uma PLATAFORMA (doc `plataformas/{P}/dados/estado`). */
@@ -400,7 +434,12 @@ const COL_PLATAFORMAS = 'plataformas';
 const colDadosPlataforma = (p) => `${COL_PLATAFORMAS}/${validarSegmento(p, 'plataforma')}/dados`;
 const colAtivos = (p) => `${COL_PLATAFORMAS}/${validarSegmento(p, 'plataforma')}/ativos`;
 const colDadosAtivo = (p, a) => `${colAtivos(p)}/${validarSegmento(a, 'ativo')}/dados`;
-const colDoAtivo = (p, a, nome) => `${colAtivos(p)}/${validarSegmento(a, 'ativo')}/${nome}`;
+// `conta` (V8.18): sem ela, o caminho é EXATAMENTE o de sempre — é isso que
+// garante que a conta principal não muda de forma. Com ela, a subcoleção da
+// conta espelho, numa árvore separada sob o ativo.
+const colDoAtivo = (p, a, nome, conta = null) => (conta
+  ? `${colAtivos(p)}/${validarSegmento(a, 'ativo')}/contas/${validarSegmento(conta, 'conta')}/${nome}`
+  : `${colAtivos(p)}/${validarSegmento(a, 'ativo')}/${nome}`);
 
 // ------------------------------------------------------------- regras gerais
 // Documento GLOBAL (coleção `global`, doc `regras_gerais`): regras simples e
@@ -500,6 +539,18 @@ export async function salvarControle(parcial) {
   await exigirBackend().salvarDoc(COL_GLOBAL, 'controle', parcial);
 }
 
+/**
+ * Observa `global/controle` em tempo real. Devolve a função de cancelamento, ou
+ * `null` se o backend não souber observar (aí quem chama volta a ler por tick).
+ * `aoFalhar` recebe o erro quando o listener cai — o Firestore ENCERRA a
+ * inscrição nesse caso, então quem observa precisa reanexar.
+ */
+export function observarControle(aoMudar, aoFalhar) {
+  const b = exigirBackend();
+  if (typeof b.observarDoc !== 'function') return null;
+  return b.observarDoc(COL_GLOBAL, 'controle', aoMudar, aoFalhar);
+}
+
 // ----------------------------------------------------------- câmbio (só exibição)
 // Documento GLOBAL (coleção `global`, doc `cambio`): cotação USD→BRL (PTAX do
 // BCB) usada SÓ para consolidar o patrimônio da visão geral em uma moeda (BRL,
@@ -548,6 +599,91 @@ export function mascararApi(api = {}) {
 }
 
 /** Publica o espelho mascarado das credenciais da plataforma. */
+// ------------------------------------------- CONTAS ESPELHO (V8.18, fase 1)
+// Contas adicionais da MESMA corretora, que recebem as ordens decididas para a
+// conta PRINCIPAL. A credencial de cada uma vive em `contas/{c}/dados/api`,
+// só-escrita pelo navegador — igual à da plataforma, e pelo mesmo motivo
+// (`firestore.rules`).
+//
+// A conta principal NÃO é uma conta desta coleção: ela continua sendo a
+// plataforma em si, exatamente onde sempre esteve. Isso é proposital — o
+// caminho que já mexe com dinheiro não muda de forma por causa do espelho.
+const colContas = (p) => `${COL_PLATAFORMAS}/${validarSegmento(p, 'plataforma')}/contas`;
+const colDadosConta = (p, c) => `${colContas(p)}/${validarSegmento(c, 'conta')}/dados`;
+
+/** Contas espelho da plataforma (sem credencial — isso é `obterApiConta`). */
+export async function listarContas(plataformaId) {
+  const docs = await exigirBackend().listarDocs(colContas(plataformaId));
+  return docs.map(({ id, dados }) => ({
+    id,
+    nome: dados.nome ?? id,
+    ativa: dados.ativa !== false,
+    // Nasce em SIMULAÇÃO (fase 2 do plano): a conta espelha numa carteira
+    // virtual antes de qualquer ordem de verdade sair para a corretora.
+    modo_simulacao: dados.modo_simulacao !== false,
+  }));
+}
+
+/** Cria/edita uma conta espelho (a dashboard escreve; os testes também). */
+export async function salvarConta(plataformaId, contaId, parcial) {
+  await exigirBackend().salvarDoc(colContas(plataformaId), validarSegmento(contaId, 'conta'), parcial);
+}
+
+/** Grava a credencial da conta espelho (só-escrita pelo navegador). */
+export async function salvarApiConta(plataformaId, contaId, api) {
+  await exigirBackend().salvarDoc(colDadosConta(plataformaId, contaId), 'api', api);
+}
+
+/** Credenciais da conta espelho. Sem fallback de `.env`: é conta de terceiro. */
+export async function obterApiConta(plataformaId, contaId) {
+  const doc = await exigirBackend().obterDoc(colDadosConta(plataformaId, contaId), 'api');
+  const api = { ...API_PLATAFORMA_PADRAO, ...(doc ?? {}) };
+  for (const valor of Object.values(api)) {
+    if (typeof valor === 'string' && valor) registrarSegredo(valor);
+  }
+  return api;
+}
+
+/** Espelho MASCARADO das credenciais da conta (é o que a dashboard lê). */
+export async function salvarApiMetaConta(plataformaId, contaId, meta) {
+  await exigirBackend().salvarDoc(colDadosConta(plataformaId, contaId), 'api_meta', {
+    campos: meta,
+    atualizado_em: new Date().toISOString(),
+  });
+}
+
+/**
+ * Operações da conta ESPELHO — árvore própria, sob o ativo
+ * (`ativos/{A}/contas/{C}/operacoes`). Separada da principal de propósito: um
+ * defeito no espelho não pode alcançar o caminho que já mexe com dinheiro, e as
+ * queries do caminho quente da principal não mudam nem de forma.
+ */
+export async function registrarOperacaoConta(plataformaId, ativoId, contaId, op) {
+  if (!op?.id) throw new Error('registrarOperacaoConta: operação sem id');
+  const col = `${colDoAtivo(plataformaId, ativoId, 'contas')}/${validarSegmento(contaId, 'conta')}/operacoes`;
+  await exigirBackend().adicionarDoc(col, op, op.id);
+  return op;
+}
+
+/** Últimas operações (sombra ou real) de uma conta espelho, mais novas antes. */
+export async function listarOperacoesConta(plataformaId, ativoId, contaId, limite = 20) {
+  const col = `${colDoAtivo(plataformaId, ativoId, 'contas')}/${validarSegmento(contaId, 'conta')}/operacoes`;
+  const docs = await exigirBackend().listarDocs(col);
+  return docs
+    .map(({ dados }) => dados)
+    .sort((a, b) => String(b.horario ?? '').localeCompare(String(a.horario ?? '')))
+    .slice(0, limite);
+}
+
+/** Estado da conta espelho: saldo lido e status da conexão. */
+export async function salvarEstadoConta(plataformaId, contaId, parcial) {
+  await exigirBackend().salvarDoc(colDadosConta(plataformaId, contaId), 'estado', parcial);
+}
+
+export async function obterEstadoConta(plataformaId, contaId) {
+  return (await exigirBackend().obterDoc(colDadosConta(plataformaId, contaId), 'estado')) ?? {};
+}
+
 export async function salvarApiMeta(plataformaId, meta) {
   await exigirBackend().salvarDoc(colDadosPlataforma(plataformaId), 'api_meta', {
     campos: meta,
@@ -889,6 +1025,12 @@ export async function listarAtivos(plataformaId) {
     id,
     manifest: { ...MANIFEST_PADRAO, ...(dados.manifest ?? {}) },
     config: { ...CONFIG_ATIVO_PADRAO, ...(dados.config ?? {}) },
+    // "Analisar agora" (V8.16): marca gravada pela dashboard no doc do ativo,
+    // FORA da config — não é ajuste de operação, é um pedido de uma vez só, e
+    // misturá-lo à config faria um clique parecer mudança de configuração no
+    // formulário de parâmetros. Precisa ser copiada explicitamente: este mapa
+    // descarta tudo o que não estiver listado.
+    analise_solicitada_em: dados.analise_solicitada_em ?? null,
   }));
 }
 
@@ -900,6 +1042,7 @@ export async function obterAtivo(plataformaId, ativoId) {
     id: ativoId,
     manifest: { ...MANIFEST_PADRAO, ...(doc.manifest ?? {}) },
     config: { ...CONFIG_ATIVO_PADRAO, ...(doc.config ?? {}) },
+    analise_solicitada_em: doc.analise_solicitada_em ?? null, // ver listarAtivos
   };
 }
 
@@ -1047,8 +1190,8 @@ export async function obterOperacoesDesdeAtivo(plataformaId, ativoId, dataISO) {
 }
 
 /** Uma posição específica pelo id (null se não existir). */
-export async function obterPosicaoAtivo(plataformaId, ativoId, id) {
-  return exigirBackend().obterDoc(colDoAtivo(plataformaId, ativoId, 'posicoes'), id);
+export async function obterPosicaoAtivo(plataformaId, ativoId, id, conta = null) {
+  return exigirBackend().obterDoc(colDoAtivo(plataformaId, ativoId, 'posicoes', conta), id);
 }
 
 /** Última operação executada do ativo (ou null). Busca nas 50 mais recentes. */
@@ -1058,15 +1201,15 @@ export async function obterUltimaOperacaoExecutadaAtivo(plataformaId, ativoId) {
 }
 
 /** Registra uma posição do ativo (usa `pos.id` como id do documento). */
-export async function registrarPosicaoAtivo(plataformaId, ativoId, pos) {
+export async function registrarPosicaoAtivo(plataformaId, ativoId, pos, conta = null) {
   if (!pos?.id) throw new Error('registrarPosicaoAtivo: posição sem id');
-  await exigirBackend().adicionarDoc(colDoAtivo(plataformaId, ativoId, 'posicoes'), pos, pos.id);
+  await exigirBackend().adicionarDoc(colDoAtivo(plataformaId, ativoId, 'posicoes', conta), pos, pos.id);
   return pos;
 }
 
 /** Atualização parcial de uma posição do ativo. */
-export async function atualizarPosicaoAtivo(plataformaId, ativoId, id, parcial) {
-  await exigirBackend().salvarDoc(colDoAtivo(plataformaId, ativoId, 'posicoes'), id, parcial);
+export async function atualizarPosicaoAtivo(plataformaId, ativoId, id, parcial, conta = null) {
+  await exigirBackend().salvarDoc(colDoAtivo(plataformaId, ativoId, 'posicoes', conta), id, parcial);
 }
 
 /**
@@ -1074,8 +1217,8 @@ export async function atualizarPosicaoAtivo(plataformaId, ativoId, id, parcial) 
  * fechadas — a coleção inteira. Uso pontual (testes/migração/auditoria);
  * o caminho quente usa obterPosicoesAbertasAtivo (V5_2_Plan.MD §4.1).
  */
-export async function obterPosicoesAtivoPorModo(plataformaId, ativoId, modo) {
-  return exigirBackend().listarPorIgual(colDoAtivo(plataformaId, ativoId, 'posicoes'), 'modo', modo);
+export async function obterPosicoesAtivoPorModo(plataformaId, ativoId, modo, conta = null) {
+  return exigirBackend().listarPorIgual(colDoAtivo(plataformaId, ativoId, 'posicoes', conta), 'modo', modo);
 }
 
 /**
@@ -1084,8 +1227,8 @@ export async function obterPosicoesAtivoPorModo(plataformaId, ativoId, modo) {
  * posições fechadas nunca mais são lidas pelo ciclo (V5_2_Plan.MD §4.1).
  * Pressupõe o backfill da inicialização (posições antigas sem o campo).
  */
-export async function obterPosicoesAbertasAtivo(plataformaId, ativoId, modo) {
-  return exigirBackend().listarPorIgual(colDoAtivo(plataformaId, ativoId, 'posicoes'), 'aberta_modo', modo);
+export async function obterPosicoesAbertasAtivo(plataformaId, ativoId, modo, conta = null) {
+  return exigirBackend().listarPorIgual(colDoAtivo(plataformaId, ativoId, 'posicoes', conta), 'aberta_modo', modo);
 }
 
 // ------------------------------------- operações manuais (modo assistido V6.0)

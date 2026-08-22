@@ -18,11 +18,15 @@ const TIMEOUT_MS = 15_000;
 const USER_AGENT = 'ia-investidora/2.2';
 
 export class ErroTT extends Error {
-  constructor(mensagem, { status = null, endpoint = null } = {}) {
+  constructor(mensagem, { status = null, endpoint = null, autenticacao = false } = {}) {
     super(mensagem);
     this.name = 'ErroTT';
     this.status = status;
     this.endpoint = endpoint;
+    // A credencial foi RECUSADA (não é falha de rede nem de formato). Quem
+    // chama usa isto para descartar o token cacheado e tentar de novo com um
+    // novo — ver `obterCandles` em ttMarketData.js.
+    this.autenticacao = autenticacao;
   }
 }
 

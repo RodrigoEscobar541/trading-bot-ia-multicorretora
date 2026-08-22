@@ -69,21 +69,44 @@ export async function obterCotacao(credenciais, simbolo) {
 
 // -------------------------------------------------------- candles via DXLink
 
-// Token de cotações (~24h) — cacheado com margem folgada de 1h.
-const tokensDeCotacao = new Map(); // refreshToken → { token, url, expiraEmMs }
+// Token de cotações do streamer. A API o documenta como válido por ~24h, e era
+// isso que este cache guardava — mas o token nasce DENTRO da sessão OAuth que o
+// pediu, e a sessão desta integração dura ~15 min (ttAuth.js). Guardá-lo por 23h
+// significava usar, por quase um dia, um token cuja sessão morreu no primeiro
+// quarto de hora: o streamer respondia `ERROR UNAUTHORIZED Authentication
+// failed`, nada invalidava o cache, e TODA análise de TODO ativo da TT falhava
+// até o TTL vencer. Foi o que aconteceu em 14/08/2026 — TT/PBR e TT/SPCX
+// alternando erro a tarde inteira, sempre com o mesmo token morto.
+//
+// Agora o cache é ancorado no ACCESS TOKEN que o gerou: sessão renovada,
+// token de cotação novo. As 23h continuam como teto secundário.
+const tokensDeCotacao = new Map(); // refreshToken → { token, url, expiraEmMs, accessToken }
 const VIDA_TOKEN_COTACAO_MS = 23 * 60 * 60 * 1000;
 
-async function obterTokenDeCotacao(credenciais) {
+/**
+ * Token + URL do streamer. `forcar` ignora o cache — é o caminho da segunda
+ * tentativa, depois de o streamer ter recusado o token anterior.
+ *
+ * `autenticar` é chamado SEMPRE, de propósito: ele tem cache próprio (~15 min),
+ * então não custa rede, e é a única forma de saber se a sessão ainda é a mesma
+ * que gerou o token guardado.
+ */
+async function obterTokenDeCotacao(credenciais, { forcar = false } = {}) {
+  const accessToken = await autenticar(credenciais);
   const cache = tokensDeCotacao.get(credenciais.refreshToken);
-  if (cache && Date.now() < cache.expiraEmMs) return cache;
+  if (!forcar && cache && cache.accessToken === accessToken && Date.now() < cache.expiraEmMs) return cache;
 
-  const token = await autenticar(credenciais);
-  const dados = await requisitar('GET', '/api-quote-tokens', { token, ambiente: credenciais.ambiente });
+  const dados = await requisitar('GET', '/api-quote-tokens', { token: accessToken, ambiente: credenciais.ambiente });
   if (!dados?.token || !dados?.['dxlink-url']) {
     throw new ErroTT('resposta de /api-quote-tokens em formato inesperado', { endpoint: '/api-quote-tokens' });
   }
   registrarSegredo(dados.token);
-  const entrada = { token: dados.token, url: dados['dxlink-url'], expiraEmMs: Date.now() + VIDA_TOKEN_COTACAO_MS };
+  const entrada = {
+    token: dados.token,
+    url: dados['dxlink-url'],
+    expiraEmMs: Date.now() + VIDA_TOKEN_COTACAO_MS,
+    accessToken,
+  };
   tokensDeCotacao.set(credenciais.refreshToken, entrada);
   return entrada;
 }
@@ -149,6 +172,7 @@ export function coletarCandlesDXLink({
     let camposServidor = CAMPOS_CANDLE;
     let quietude = null;
     let terminado = false;
+    let autenticacaoEnviada = false;
 
     const terminar = (erro = null) => {
       if (terminado) return;
@@ -176,8 +200,19 @@ export function coletarCandlesDXLink({
 
       switch (msg.type) {
         case 'AUTH_STATE':
-          if (msg.state === 'UNAUTHORIZED') enviar({ type: 'AUTH', channel: 0, token });
-          else if (msg.state === 'AUTHORIZED') {
+          // UNAUTHORIZED é o estado NORMAL logo após o SETUP: é o convite para
+          // mandar o token. Mas se ele volta DEPOIS de já termos autenticado, o
+          // token foi recusado — e reenviá-lo faria o mesmo par de mensagens em
+          // laço até o timeout de 15 s, escondendo uma falha de credencial atrás
+          // de um "timeout aguardando candles".
+          if (msg.state === 'UNAUTHORIZED') {
+            if (autenticacaoEnviada) {
+              terminar(new ErroTT('streamer DXLink recusou o token de cotação', { autenticacao: true }));
+              break;
+            }
+            autenticacaoEnviada = true;
+            enviar({ type: 'AUTH', channel: 0, token });
+          } else if (msg.state === 'AUTHORIZED') {
             enviar({ type: 'CHANNEL_REQUEST', channel: 1, service: 'FEED', parameters: { contract: 'AUTO' } });
           }
           break;
@@ -205,7 +240,14 @@ export function coletarCandlesDXLink({
           agendarQuietude();
           break;
         case 'ERROR':
-          terminar(new ErroTT(`streamer DXLink recusou: ${msg.error ?? ''} ${msg.message ?? ''}`.trim()));
+          terminar(
+            new ErroTT(`streamer DXLink recusou: ${msg.error ?? ''} ${msg.message ?? ''}`.trim(), {
+              // Só o UNAUTHORIZED é recuperável trocando o token; qualquer outro
+              // erro do streamer (símbolo inválido, canal, protocolo) seguiria
+              // falhando igual com um token novo — repetir seria só gastar rede.
+              autenticacao: String(msg.error ?? '').toUpperCase() === 'UNAUTHORIZED',
+            }),
+          );
           break;
         default:
           break; // SETUP/KEEPALIVE/CHANNEL_* não exigem ação numa conexão curta
@@ -224,17 +266,32 @@ export async function obterCandles(credenciais, simbolo, resolucao = '15m', quan
   const periodo = RESOLUCOES[resolucao];
   if (!periodo) throw new ErroTT(`resolução de candle não suportada: ${resolucao}`);
 
-  const { token, url } = await obterTokenDeCotacao(credenciais);
   const janelaMs = RESOLUCAO_MS[resolucao] * quantidade;
   const deMs = Date.now() - janelaMs * 5; // folga p/ noites/fins de semana/feriados
 
-  const brutos = await coletarCandlesDXLink({
-    url,
-    token,
-    simboloCandle: `${simbolo}{=${periodo}}`,
-    deMs,
-    ...opcoes,
-  });
+  // Uma tentativa; se o streamer RECUSAR o token, uma segunda com token novo.
+  // A segunda existe porque o token pode morrer entre ser pedido e ser usado
+  // (sessão renovada por outro ativo no meio do caminho), e porque nenhuma
+  // âncora de cache cobre o caso de a corretora invalidar o token do seu lado.
+  // Só isso: um terceiro laço viraria martelo numa credencial de fato inválida.
+  let brutos;
+  for (let tentativa = 0; ; tentativa++) {
+    const { token, url } = await obterTokenDeCotacao(credenciais, { forcar: tentativa > 0 });
+    try {
+      brutos = await coletarCandlesDXLink({
+        url,
+        token,
+        simboloCandle: `${simbolo}{=${periodo}}`,
+        deMs,
+        ...opcoes,
+      });
+      break;
+    } catch (e) {
+      if (!e?.autenticacao || tentativa > 0) throw e;
+      // Token queimado: fora do cache, para o próximo ativo não repetir o erro.
+      tokensDeCotacao.delete(credenciais.refreshToken);
+    }
+  }
 
   // Dedupe por horário (o streamer pode reenviar a vela corrente) + ordenação.
   const porHorario = new Map();

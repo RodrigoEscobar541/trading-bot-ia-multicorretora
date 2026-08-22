@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>IA Investidora — Painel</title>
   <!-- ?v= quebra o cache de 1h do hosting quando os arquivos mudam de era -->
-  <link rel="stylesheet" href="style.css?v=7" />
+  <link rel="stylesheet" href="style.css?v=10" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📈</text></svg>" />
 </head>
 <body>
@@ -64,12 +64,12 @@
         <div id="banner-avisos" class="banner-avisos" hidden></div>
         <section class="tiles">
           <article class="cartao tile tile-heroi">
-            <span class="tile-rotulo">Patrimônio consolidado (em BRL)</span>
+            <span class="tile-rotulo">Patrimônio REAL consolidado (em BRL)</span>
             <span id="geral-patrimonio" class="tile-valor tile-valor-heroi">—</span>
             <span id="geral-caixa" class="tile-delta"></span>
           </article>
           <article id="tile-nao-realizado" class="cartao tile tile-sinal">
-            <span class="tile-rotulo">Se vender tudo agora (líquido de taxas, BRL)</span>
+            <span class="tile-rotulo">Se vender tudo agora — só posições reais (líquido de taxas, BRL)</span>
             <span id="geral-nao-realizado" class="tile-valor">—</span>
             <span id="geral-nao-realizado-nota" class="tile-delta"></span>
           </article>
@@ -122,16 +122,6 @@
               <tbody></tbody>
             </table>
           </div>
-        </section>
-
-        <section id="cartao-relatorio" class="cartao" hidden>
-          <div class="controle-linha">
-            <h2>Relatório de decisões</h2>
-            <span id="relatorio-janela" class="texto-secundario"></span>
-          </div>
-          <p class="texto-secundario">Como o robô decidiu no período: quantas vezes agiu, como as posições
-            fecharam e quanto de risco cada ganho custou. Enviado no Telegram a cada 7 dias.</p>
-          <div id="relatorio-corpo"></div>
         </section>
 
         <!-- Ajustes e controles: ficam por ÚLTIMO de propósito. São usados uma
@@ -309,6 +299,15 @@
               <div><dt>Última verificação</dt><dd id="info-ultima-verificacao">—</dd></div>
               <div><dt>Próxima análise em</dt><dd id="info-contagem" class="contagem">—</dd></div>
             </dl>
+            <div class="form-acoes">
+              <button type="button" id="btn-analisar-agora" class="botao-fantasma">⚡ Analisar agora</button>
+              <span id="analisar-agora-status" class="texto-secundario" role="status"></span>
+            </div>
+            <p class="texto-secundario">
+              Pede ao robô a análise deste ativo no próximo minuto, sem esperar o intervalo e sem
+              passar pelo filtro de variação mínima. O relógio da próxima análise reinicia a partir
+              dela. Em ativo de bolsa fora do pregão, o pedido é atendido quando o mercado abrir.
+            </p>
           </article>
         </section>
 
@@ -403,27 +402,17 @@
           </details>
         </section>
 
-        <section class="grade-2">
-          <article class="cartao">
-            <h2>Patrimônio da plataforma</h2>
-            <div id="grafico-patrimonio" class="grafico"></div>
-            <details class="dados-tabela">
-              <summary>Ver dados</summary>
-              <div class="rolagem"><table id="tabela-patrimonio"></table></div>
-            </details>
-          </article>
-          <article class="cartao">
-            <h2>Lucro do ativo ao longo do tempo</h2>
-            <div id="grafico-lucro" class="grafico"></div>
-            <details class="dados-tabela">
-              <summary>Ver dados</summary>
-              <div class="rolagem"><table id="tabela-lucro"></table></div>
-            </details>
-          </article>
+        <section class="cartao">
+          <h2>Lucro do ativo ao longo do tempo</h2>
+          <div id="grafico-lucro" class="grafico"></div>
+          <details class="dados-tabela">
+            <summary>Ver dados</summary>
+            <div class="rolagem"><table id="tabela-lucro"></table></div>
+          </details>
         </section>
 
         <section class="cartao">
-          <h2>Histórico de operações</h2>
+          <h2>Histórico de operações <span class="texto-secundario">(10 mais recentes)</span></h2>
           <div class="rolagem">
             <table id="tabela-operacoes" class="tabela-operacoes">
               <thead>
@@ -440,71 +429,11 @@
 
         <section class="cartao">
           <h2>Configurações do ativo</h2>
-          <form id="form-config-ativo" class="form-config">
-            <fieldset>
-              <legend>Operação</legend>
-              <label class="alternador">
-                <input type="checkbox" id="cfg-ativo-ligado" />
-                <span>Ativo LIGADO (o robô analisa e opera este ativo)</span>
-              </label>
-              <label class="alternador">
-                <input type="checkbox" id="cfg-modo-simulacao" />
-                <span>Modo Simulação ativo (ordens fictícias; desmarcar envia ordens REAIS à plataforma)</span>
-              </label>
-            </fieldset>
-            <fieldset>
-              <legend>Parâmetros</legend>
-              <div class="grade-campos">
-                <label>Tempo entre análises (min)
-                  <input type="number" id="cfg-tempo-analises" min="1" step="1" required />
-                </label>
-                <label>Variação mínima p/ chamar a IA (%)
-                  <input type="number" id="cfg-variacao-minima" min="0" step="0.01" required />
-                </label>
-                <label>Divergência máx. na execução (%)
-                  <input type="number" id="cfg-divergencia-max" min="0" step="0.1" required />
-                </label>
-                <label>Tempo de reset (dias)
-                  <input type="number" id="cfg-tempo-reset" min="1" step="1" required />
-                </label>
-                <label>Taxa de compra (%)
-                  <input type="number" id="cfg-taxa-compra" min="0" step="0.01" required />
-                </label>
-                <label>Taxa de venda (%)
-                  <input type="number" id="cfg-taxa-venda" min="0" step="0.01" required />
-                </label>
-                <label>Limite de perda diária (%) — 0 desativa
-                  <input type="number" id="cfg-limite-perda" min="0" step="0.1" required />
-                </label>
-                <label>Orçamento do ativo (% do patrimônio da plataforma)
-                  <input type="number" id="cfg-orcamento" min="0" max="100" step="1" required />
-                </label>
-                <label>Distância máxima do stop-loss (%)
-                  <input type="number" id="cfg-stop-distancia" min="0.1" max="90" step="0.5" required />
-                </label>
-                <label>Folga do stop-loss (%) — distância MÍNIMA entre o preço e o chão, e a distância em que o robô sobe o chão sozinho quando a posição está em lucro. Chão que a IA peça mais perto que isso é recusado
-                  <input type="number" id="cfg-stop-trailing" min="0.1" max="50" step="0.1" required />
-                </label>
-                <label>Trava de lucro — gatilho (%) — quanto a posição precisa subir acima do ponto de empate para o robô armar a trava. 0 desliga a trava neste ativo
-                  <input type="number" id="cfg-trava-gatilho" min="0" max="50" step="0.1" required />
-                </label>
-                <label>Trava de lucro — devolução (%) — quanto do TOPO da posição o robô aceita devolver antes de vender e realizar o lucro. Menor = realiza mais cedo e mais vezes
-                  <input type="number" id="cfg-trava-devolucao" min="0" max="50" step="0.1" required />
-                </label>
-                <label>Ordem mínima (valor na moeda)
-                  <input type="number" id="cfg-min-valor" min="0" step="0.01" required />
-                </label>
-                <label>Ordem mínima (quantidade)
-                  <input type="number" id="cfg-min-qtd" min="0" step="0.00000001" required />
-                </label>
-              </div>
-              <p id="cfg-orcamento-soma" class="texto-secundario"></p>
-            </fieldset>
-            <div class="form-acoes">
-              <button type="submit" class="botao-primario">Salvar configurações do ativo</button>
-              <span id="config-ativo-status" class="texto-secundario" role="status"></span>
-            </div>
-          </form>
+          <p class="texto-secundario">
+            Ligar/desligar, simulação × real e todos os números deste ativo ficam agora na tela
+            <a href="#/parametros">⚙ Parâmetros</a>, numa tabela com TODOS os ativos lado a lado —
+            é onde dá para comparar e equilibrar os valores sem abrir uma tela por ativo.
+          </p>
         </section>
 
         <section class="grade-2">
@@ -537,11 +466,59 @@
           <h2>Zona de risco</h2>
           <p class="texto-secundario">
             Excluir o ativo apaga configurações, histórico, operações e posições — PARA SEMPRE.
-            Só é possível com o ativo DESLIGADO (desligue nas configurações acima e salve).
+            Só é possível com o ativo DESLIGADO — desligue na tela
+            <a href="#/parametros">Parâmetros</a> e salve.
           </p>
           <div class="form-acoes">
             <button id="botao-excluir-ativo" type="button" class="botao-perigo">Excluir este ativo</button>
             <span id="excluir-ativo-status" class="texto-secundario" role="status"></span>
+          </div>
+        </section>
+      </section>
+
+      <!-- ============ tela: parâmetros de todos os ativos ============ -->
+      <!-- Uma tabela, uma linha por ativo, na MESMA ordem da Visão geral. Existe
+           para o número poder ser comparado com o do vizinho: equilibrar
+           orçamento, folga e trava é decisão entre ativos, e a tela por ativo
+           obrigava a decorar o valor de um para digitar o do outro. -->
+      <section id="tela-parametros" hidden>
+        <section class="cartao">
+          <div class="controle-linha">
+            <h2>Parâmetros de todos os ativos</h2>
+            <span id="parametros-resumo" class="texto-secundario"></span>
+          </div>
+          <p class="texto-secundario">
+            Edite direto na tabela — as células mexidas ficam destacadas e nada é gravado até você
+            clicar em <strong>Salvar alterações</strong>. Só o que você mudou é escrito; os demais
+            campos do ativo ficam intactos. Passe o mouse no título da coluna para ver o que cada
+            número faz. As mudanças valem no próximo ciclo do robô (até 1 minuto).
+          </p>
+          <div class="banner-travado" id="parametros-aviso-trava" hidden></div>
+          <div class="rolagem rolagem-parametros">
+            <table id="tabela-parametros" class="tabela-parametros">
+              <thead><tr></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <!-- A soma fica GRUDADA na tabela, e não num cartão lá embaixo: ela
+               muda enquanto se digita o orçamento, e um aviso fora do campo de
+               visão é um aviso que não existe. -->
+          <div class="orcamentos-resumo">
+            <h3>Soma dos orçamentos</h3>
+            <div id="parametros-orcamentos" class="lista-orcamentos"></div>
+            <p class="texto-secundario">
+              O orçamento é a fatia do patrimônio da plataforma que cada ativo pode ocupar.
+              <strong>Simulação e modo real têm patrimônios separados</strong>, e cada um divide os
+              seus próprios 100% — por isso a conta é por plataforma E por modo, e um ativo muda de
+              grupo assim que você marca ou desmarca "Simulação". Acima de 100% a soma e as células
+              de orçamento daquele grupo ficam <strong class="texto-erro">vermelhas</strong>: é aviso
+              de que há o que reequilibrar, não trava — dá para salvar assim mesmo.
+            </p>
+          </div>
+          <div class="form-acoes barra-parametros">
+            <button type="button" id="btn-parametros-salvar" class="botao-primario" disabled>Salvar alterações</button>
+            <button type="button" id="btn-parametros-desfazer" class="botao-fantasma" disabled>Desfazer</button>
+            <span id="parametros-status" class="texto-secundario" role="status"></span>
           </div>
         </section>
       </section>
@@ -600,6 +577,20 @@
           <div class="form-acoes">
             <button type="button" id="btn-steam-atualizar" class="botao-fantasma">↻ Atualizar agora</button>
             <span id="steam-status" class="texto-secundario" role="status"></span>
+          </div>
+        </section>
+
+        <section class="cartao cartao-controle">
+          <h2>Pausar as análises</h2>
+          <p class="texto-secundario" id="steam-pausa-descricao">
+            Desliga só a <strong>análise da IA</strong> dos itens marcados — é ela que gasta uma
+            chamada de IA por item, a cada rodada. O resto continua igual: os preços do inventário
+            seguem atualizando, as atualizações do CS2 continuam chegando e os alertas de preço-alvo
+            continuam avisando. Nada é apagado, e o botão devolve tudo no mesmo lugar.
+          </p>
+          <div class="form-acoes">
+            <button type="button" id="btn-steam-pausar" class="botao-perigo">⏸ Pausar análises da Steam</button>
+            <span id="steam-pausa-status" class="texto-secundario" role="status"></span>
           </div>
         </section>
 
@@ -832,6 +823,98 @@
             </div>
           </form>
         </section>
+        <!-- O patrimônio é da PLATAFORMA, não de um ativo: ele mora aqui desde
+             a V8.16. A série é montada juntando o histórico de todos os ativos
+             dela — cada análise carimba o patrimônio do momento, e o modo
+             separa as duas carteiras (simulação e real têm 100% cada uma). -->
+        <section class="cartao">
+          <div class="controle-linha">
+            <h2>Patrimônio da plataforma</h2>
+            <div id="patrimonio-modos" class="seletor-modo">
+              <button type="button" class="botao-fantasma ativo" data-modo="real">Real</button>
+              <button type="button" class="botao-fantasma" data-modo="simulacao">Simulação</button>
+            </div>
+          </div>
+          <p class="texto-secundario" id="patrimonio-nota"></p>
+          <div id="grafico-patrimonio" class="grafico"></div>
+          <details class="dados-tabela">
+            <summary>Ver dados</summary>
+            <div class="rolagem"><table id="tabela-patrimonio"></table></div>
+          </details>
+        </section>
+
+        <!-- CONTAS ESPELHO (V8.18, fase 1). Hoje isto só LÊ o saldo e prova que
+             a credencial funciona — nenhuma ordem é enviada. As fases seguintes
+             estão no ROADMAP, item 14. -->
+        <section class="cartao" id="cartao-contas">
+          <h2>Contas espelho</h2>
+          <p class="texto-secundario">
+            Contas adicionais <strong>na mesma corretora</strong> que recebem as ordens decididas
+            para a sua conta. A IA analisa <strong>uma vez só</strong>, olhando a SUA carteira — por
+            isso uma conta a mais não custa nenhuma chamada de IA.
+          </p>
+          <div class="banner-avisos" id="contas-aviso-fase">
+            ⚠️ <strong>Fase 2 de 4 — ordem SOMBRA:</strong> quando o robô compra na sua conta, ele
+            calcula o que ESTA conta compraria (com o saldo real dela) e registra o resultado abaixo.
+            <strong>Nada é enviado para a corretora.</strong> A ordem de verdade só começa na fase 3.
+          </div>
+          <div class="banner-travado" id="contas-aviso-mesma" hidden></div>
+          <div class="rolagem">
+            <table id="tabela-contas" class="tabela-operacoes">
+              <thead>
+                <tr><th>Conta</th><th>Estado</th><th>Modo</th><th>Conexão</th><th>Saldo lido</th><th>Chaves</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="contas-vazio" class="texto-secundario" hidden>Nenhuma conta espelho cadastrada.</p>
+
+          <h3 class="secao-titulo">Ordens sombra</h3>
+          <p class="texto-secundario">
+            O que cada conta teria comprado, lado a lado com o que a sua conta comprou de verdade.
+            É por aqui que se confere, antes de arriscar dinheiro, se o tamanho da ordem sai certo.
+          </p>
+          <div class="rolagem">
+            <table id="tabela-sombras" class="tabela-operacoes">
+              <thead>
+                <tr><th>Quando</th><th>Conta</th><th>Ativo</th><th>Teria comprado</th><th>A principal comprou</th><th>Saldo da conta</th><th>Resultado</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="sombras-vazio" class="texto-secundario" hidden>
+            Nenhuma ordem sombra ainda — a primeira aparece na próxima COMPRA que o robô fizer.
+          </p>
+
+          <details id="detalhes-nova-conta">
+            <summary><span class="config-titulo">➕ Cadastrar conta espelho</span></summary>
+            <div class="config-corpo">
+              <form id="form-nova-conta" class="form-config" autocomplete="off">
+                <div class="grade-campos">
+                  <label>Identificador (sem espaço — vira o id no banco)
+                    <input type="text" id="conta-id" maxlength="20" required placeholder="Ex.: joao" />
+                  </label>
+                  <label>Nome para você reconhecer
+                    <input type="text" id="conta-nome" maxlength="40" required placeholder="Ex.: Conta do João" />
+                  </label>
+                </div>
+                <fieldset>
+                  <legend id="conta-cred-legenda">Credenciais da conta</legend>
+                  <div id="conta-campos-api"><!-- por conector, preenchido pelo app.js --></div>
+                </fieldset>
+                <p class="texto-secundario">
+                  A conta nasce <strong>ativa e em modo simulação</strong>. As credenciais são gravadas
+                  e <strong>nunca voltam para a tela</strong> — a mesma regra da chave da sua conta.
+                </p>
+                <div class="form-acoes">
+                  <button type="submit" class="botao-primario">Cadastrar conta</button>
+                  <span id="conta-status" class="texto-secundario" role="status"></span>
+                </div>
+              </form>
+            </div>
+          </details>
+        </section>
+
         <section class="cartao">
           <h2>Cadastrar novo ativo</h2>
           <p class="texto-secundario" id="novo-ativo-dica">Informe o código do ativo negociado nesta plataforma.</p>
@@ -874,6 +957,6 @@
     </main>
   </div>
 
-  <script type="module" src="app.js?v=13"></script>
+  <script type="module" src="app.js?v=19"></script>
 </body>
 </html>

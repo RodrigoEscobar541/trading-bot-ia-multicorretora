@@ -31,10 +31,12 @@ import {
   salvarEstatisticasAtivo,
   salvarEstadoPlataforma,
   obterRendaReal,
+  salvarRendaReal,
   obterCambio,
   salvarConfigRenda,
 } from '../src/firebase/firebaseClient.js';
 import { invalidarCatalogo } from '../src/nucleo/catalogo.js';
+import { BASE_PATRIMONIO } from '../src/executor/executor.js';
 
 const aprox = (real, esperado, tolerancia = 0.01) =>
   assert.ok(Math.abs(real - esperado) <= tolerancia, `esperava ~${esperado}, veio ${real}`);
@@ -152,8 +154,12 @@ async function semearCenario() {
     config: { modo_simulacao: false },
   });
   await salvarEstatisticasAtivo('TT', 'AAPL', 'real', { lucro_total: 2 });
-  // Principal da comparação: patrimônio real do dia na plataforma BRL.
-  await salvarEstadoPlataforma('MB', { patrimonio_inicio_dia: { real: { data: '2026-07-30', valor: 1000 } } });
+  // Principal da comparação: patrimônio real do dia na plataforma BRL. O carimbo
+  // `base` diz sob qual regra ele foi medido — sem ele a referência é de antes da
+  // V8.14 (patrimônio dos dois modos juntos) e o comparativo a recusa.
+  await salvarEstadoPlataforma('MB', {
+    patrimonio_inicio_dia: { real: { data: '2026-07-30', valor: 1000, base: BASE_PATRIMONIO } },
+  });
 }
 
 beforeEach(semearCenario);
@@ -293,7 +299,9 @@ test('ativo que volta para a simulação sai do total (moeda zera em vez de cong
 
 test('comparativo da SIMULAÇÃO usa estatísticas e principal do modo simulação (V6.2)', async () => {
   // Principal simulado da plataforma BRL (independente do real, que é 1000).
-  await salvarEstadoPlataforma('MB', { patrimonio_inicio_dia: { simulacao: { data: '2026-07-30', valor: 2000 } } });
+  await salvarEstadoPlataforma('MB', {
+    patrimonio_inicio_dia: { simulacao: { data: '2026-07-30', valor: 2000, base: BASE_PATRIMONIO } },
+  });
   invalidarCatalogo();
   const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
   assert.ok(doc.simulacao);
@@ -303,6 +311,90 @@ test('comparativo da SIMULAÇÃO usa estatísticas e principal do modo simulaç�
   aprox(doc.simulacao.comparativo.bot.periodo, 49.95, 0.01); // 999 sobre 2000
   // O bloco real segue independente no topo do doc.
   assert.equal(doc.lucro_real_total, 30);
+});
+
+// ------------------------------- principal do comparativo (só dinheiro do modo)
+// O denominador do "% do robô" é o patrimônio de largada das plataformas que têm
+// ativo NO MODO. Como ele vem de `patrimonio_inicio_dia[modo]`, que desde a V8.14
+// é medido só com os ativos daquele modo, o comparativo REAL nunca divide o lucro
+// por posição de ativo simulado nem pela carteira virtual.
+
+test('principal do modo real ignora o patrimônio da simulação (e vice-versa)', async () => {
+  await salvarEstadoPlataforma('MB', {
+    patrimonio_inicio_dia: { simulacao: { data: '2026-07-30', valor: 9000, base: BASE_PATRIMONIO } },
+  });
+  invalidarCatalogo();
+  const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  assert.equal(doc.patrimonio_inicial, 1000); // real: só a referência do modo real
+  assert.equal(doc.simulacao.patrimonio_inicial, 9000);
+  assert.deepEqual(doc.patrimonio_inicial_plataformas, ['MB']);
+  assert.equal(doc.patrimonio_inicial_base, BASE_PATRIMONIO);
+  assert.equal(doc.patrimonio_inicial_medido_em, '2026-07-30');
+});
+
+test('referência medida sob a regra ANTIGA (sem carimbo) não vira principal', async () => {
+  // Sem `base`: é uma referência de antes da V8.14, quando o patrimônio somava os
+  // ativos dos DOIS modos. Entrar com ela inflaria o principal com dinheiro
+  // virtual — melhor ficar sem e tentar de novo quando o ciclo re-ancorar.
+  await salvarEstadoPlataforma('MB', {
+    patrimonio_inicio_dia: { real: { data: '2026-07-30', valor: 2651.05, base: null } },
+  });
+  invalidarCatalogo();
+  const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  assert.equal(doc.patrimonio_inicial, null);
+  assert.equal(doc.patrimonio_inicial_base, null);
+  // MB caiu pelo carimbo velho; a TT (também com ativo real) nunca teve referência.
+  assert.deepEqual(doc.patrimonio_inicial_fora, ['MB', 'TT']);
+  assert.equal(doc.comparativo.bot.periodo, null); // sem principal não há % do robô
+});
+
+test('principal já salvo sob a regra antiga é DESCARTADO e re-medido', async () => {
+  // Doc como ficou em produção até a V8.15: principal inflado, sem carimbo.
+  await salvarRendaReal({
+    inicio_comparacao: '2026-07-27T17:32:26.039Z',
+    patrimonio_inicial: 2651.05,
+    lucro_real_por_moeda: { BRL: 30 },
+  });
+  const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  assert.equal(doc.patrimonio_inicial, 1000); // re-medido pela regra atual
+  assert.equal(doc.patrimonio_inicial_base, BASE_PATRIMONIO);
+  assert.equal(doc.inicio_comparacao, '2026-07-27T17:32:26.039Z'); // a régua do tempo não recua
+  // E, uma vez carimbado, o principal volta a ser fixo: nova referência não mexe.
+  await salvarEstadoPlataforma('MB', {
+    patrimonio_inicio_dia: { real: { data: '2026-08-01', valor: 5000, base: BASE_PATRIMONIO } },
+  });
+  invalidarCatalogo();
+  const depois = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  assert.equal(depois.patrimonio_inicial, 1000);
+});
+
+test('principal soma as MESMAS carteiras do lucro, convertendo a moeda estrangeira', async () => {
+  await atualizarCambio({ agora: AGORA, fetchFn: fetchOk('5.00') }); // USD→BRL = 5
+  await salvarEstadoPlataforma('TT', {
+    patrimonio_inicio_dia: { real: { data: '2026-07-30', valor: 100, base: BASE_PATRIMONIO } },
+  });
+  invalidarCatalogo();
+  const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  // MB 1000 (BRL) + TT 100 USD × 5 = 1500 — o mesmo universo do lucro (30 + 2×5).
+  assert.equal(doc.patrimonio_inicial, 1500);
+  assert.deepEqual(doc.patrimonio_inicial_plataformas, ['MB', 'TT']);
+  assert.deepEqual(doc.patrimonio_inicial_fora, []);
+  assert.equal(doc.lucro_real_total, 40);
+  aprox(doc.comparativo.bot.periodo, 2.67, 0.01); // 40 sobre 1500
+});
+
+test('plataforma do modo sem cotação de câmbio fica fora do principal (e é reportada)', async () => {
+  // Sem `global/cambio`: o lucro em USD já ficava de fora do numerador; o
+  // patrimônio da TT tem de ficar de fora do denominador pelo mesmo motivo.
+  await salvarEstadoPlataforma('TT', {
+    patrimonio_inicio_dia: { real: { data: '2026-07-30', valor: 100, base: BASE_PATRIMONIO } },
+  });
+  invalidarCatalogo();
+  const doc = await atualizarRendaReal({ agora: AGORA, fetchFn: fetchOk('15.00') });
+  assert.equal(doc.patrimonio_inicial, 1000);
+  assert.deepEqual(doc.patrimonio_inicial_plataformas, ['MB']);
+  assert.deepEqual(doc.patrimonio_inicial_fora, ['TT']);
+  assert.deepEqual(doc.moedas_sem_cambio, ['USD']);
 });
 
 test('câmbio USD→BRL vem da API do BCB, com fallback para a última / o padrão', async () => {

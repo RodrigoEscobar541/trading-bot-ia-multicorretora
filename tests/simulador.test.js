@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 
 import {
   aplicarDeltaExterno,
+  fotoSaldosReais,
   garantirCarteiraVirtual,
   sincronizarComSaldosReais,
   executarOrdemSimulada,
@@ -68,12 +69,17 @@ test('primeira execução copia os saldos reais da plataforma (nunca valor fixo)
 test('depósito real é espelhado como delta na carteira virtual', async () => {
   await garantirCarteiraVirtual('MB', conectorFalso({ saldo_moeda: 1000, saldos: { BTC: 0.01 } }));
   // Conta real recebeu +500 BRL e +0.002 BTC desde a última foto.
-  const ajustada = await sincronizarComSaldosReais('MB', conectorFalso({ saldo_moeda: 1500, saldos: { BTC: 0.012 } }));
+  const { carteira: ajustada, movimentacao_externa } = await sincronizarComSaldosReais(
+    'MB',
+    conectorFalso({ saldo_moeda: 1500, saldos: { BTC: 0.012 } }),
+  );
   assert.equal(ajustada.saldo_moeda, 1500);
   assert.equal(ajustada.saldos.BTC, 0.012);
+  assert.equal(movimentacao_externa, true); // o circuit breaker precisa saber (V8.12)
   // Sem nova movimentação, nada muda (referência foi atualizada).
   const denovo = await sincronizarComSaldosReais('MB', conectorFalso({ saldo_moeda: 1500, saldos: { BTC: 0.012 } }));
-  assert.equal(denovo.saldo_moeda, 1500);
+  assert.equal(denovo.carteira.saldo_moeda, 1500);
+  assert.equal(denovo.movimentacao_externa, false);
 });
 
 test('operações simuladas não são desfeitas pela sincronização (só o delta externo entra)', async () => {
@@ -86,8 +92,46 @@ test('operações simuladas não são desfeitas pela sincronização (só o delt
     config: CONFIG,
   });
   // A conta REAL não mudou → sincronização não altera nada.
-  const c = await sincronizarComSaldosReais('MB', conectorFalso({ saldo_moeda: 1000, saldos: {} }));
+  const { carteira: c } = await sincronizarComSaldosReais('MB', conectorFalso({ saldo_moeda: 1000, saldos: {} }));
   assert.equal(c.saldo_moeda, 800);
+});
+
+// --------------------------------- foto dos saldos reais (V8.12, incidente 08/2026)
+
+test('fotoSaldosReais zera o símbolo que SUMIU da conta real (merge não apaga chave)', () => {
+  const foto = fotoSaldosReais(
+    { saldo_moeda: 1000, saldos: { ETH: 0.5 } },
+    { saldo_moeda: 900, saldos: { BTC: 0.00347, ETH: 0.5 } },
+    '2026-08-13T00:00:00Z',
+  );
+  // BTC sumiu da corretora (que omite saldo zerado) → vai a ZERO explícito.
+  assert.deepEqual(foto.saldos, { ETH: 0.5, BTC: 0 });
+  assert.equal(foto.saldo_moeda, 1000);
+});
+
+test('saque real é espelhado UMA vez — o lote comprado depois dele sobrevive', async () => {
+  // Reproduz o incidente de produção (BN/BTC, 11 e 12/08/2026): a conta real
+  // tinha BTC, o dono o retirou, e o mesmo saque voltava a ser calculado a cada
+  // ciclo — a compra do bot era desfeita segundos depois, e o lote fechava como
+  // `externa` sem resultado.
+  await garantirCarteiraVirtual('MB', conectorFalso({ saldo_moeda: 1000, saldos: { BTC: 0.005, ETH: 0.5 } }));
+  const contaSemBtc = conectorFalso({ saldo_moeda: 1000, saldos: { ETH: 0.5 } });
+
+  const primeira = await sincronizarComSaldosReais('MB', contaSemBtc);
+  assert.equal(primeira.carteira.saldos.BTC, 0); // saque espelhado: correto
+  assert.equal(primeira.movimentacao_externa, true);
+
+  // O bot compra na simulação DEPOIS do saque.
+  await executarOrdemSimulada({
+    plataformaId: 'MB',
+    ativoId: 'BTC',
+    ordem: { tipo: 'COMPRA', valor: 200, preco_execucao: 100000 },
+    config: CONFIG,
+  });
+
+  const segunda = await sincronizarComSaldosReais('MB', contaSemBtc);
+  assert.equal(segunda.movimentacao_externa, false, 'o mesmo saque não pode ser detectado de novo');
+  assert.equal(segunda.carteira.saldos.BTC, 0.00197, 'o lote recém-comprado tem de sobreviver');
 });
 
 // ----------------------------------------------------- execução de ordens

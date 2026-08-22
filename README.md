@@ -16,8 +16,8 @@ indicadores técnicos no próprio código, monta um prompt em camadas para o
 | :--- | :--- |
 | **Stack** | Node.js 22+ · JavaScript puro (ESM) · Firestore · Firebase Hosting/Auth · Gemini API |
 | **Dependências de runtime** | **uma** (`firebase-admin`) — HTTP, WebSocket, assinatura HMAC e o painel web são todos sem framework |
-| **Testes** | **532**, em `node:test` — sem Jest, sem mocks de biblioteca |
-| **Tamanho** | ~12.700 linhas em `src/` (48 módulos) · ~8.600 de teste · ~4.700 no painel |
+| **Testes** | **656**, em `node:test` — sem Jest, sem mocks de biblioteca |
+| **Tamanho** | ~14.400 linhas em `src/` (50 módulos) · ~11.000 de teste · ~5.800 no painel |
 | **Em produção** | processo único numa VPS sob `pm2`, com deploy automático e heartbeat visível no painel |
 
 > ℹ️ Esta é a **cópia pública** de um projeto pessoal em operação. Credenciais,
@@ -86,6 +86,9 @@ flowchart TD
 | **O Firestore cobra por leitura, e um tick de 1 minuto multiplica tudo por 1.440.** | Catálogo de configuração em cache com TTL, cada documento no escopo em que ele varia, estado de agendamento em memória e nenhuma query sem limite em coleção que cresce. Resultado medido: ~23 mil → ~5 mil leituras/dia. |
 | **Um deploy automático que falhava no meio ficava irrecuperável.** A árvore no código novo, o processo no antigo, e todo tick seguinte dizendo "nada novo". | A régua do "já atualizado" deixou de ser a comparação de commits e passou a ser um **arquivo escrito só depois de instalar, testar e reiniciar com sucesso**. Falhou, tenta de novo no tick seguinte. |
 | **O mascaramento de segredos no painel era cosmético.** A tela mostrava `••••1234`, mas o navegador baixava a credencial inteira. | As regras do Firestore passaram a **recusar leitura** dos documentos de segredo, aceitando só escrita. O painel exibe os 4 últimos caracteres lendo um espelho que o bot publica. As regras têm teste contra o emulador — errar ali expõe a chave ou tranca o dono fora do painel. |
+| **"Conectado" só provava que a credencial conseguia LER.** Uma chave sem permissão de negociar autenticava normalmente, e o painel ficou verde por dias enquanto toda ordem real voltava erro — inclusive a venda do stop-loss, que é a proteção inteira do sistema. | O contrato dos conectores ganhou um método opcional que **pede uma ordem de teste que não cria ordem** (`/order/test` na Binance, o dry-run na Tastytrade). São **três** estados, e a fronteira entre dois deles é o desenho: `false` é prova de que não opera e vira alarme; `null` é falta de prova (rede, filtro, saldo) e fica em silêncio. Erro de filtro virando alarme treinaria o dono a ignorar a mensagem que importa. |
+| **Uma sobra de centavos gerava 234 ordens com erro em dois dias.** Toda venda trunca a quantidade ao lote da corretora, e o resto virava posição — que a trava de lucro tentava vender a cada ciclo, para sempre. | A reconciliação parou de abrir posição para sobra abaixo do mínimo, e os três caminhos de venda passaram a recusar a ordem pequena **em silêncio**. O critério virou o **valor**, não a quantidade: o mínimo em quantidade era digitado à mão e estava cem vezes abaixo do real — o filtro existia e não filtrava nada. |
+| **Um diagnóstico derrubou o robô.** Um script de análise varreu o histórico de todos os ativos, estourou a cota diária de leitura do banco e deixou as posições **sem chão por horas**. | A documentação ganhou um capítulo sobre como medir o próprio sistema: começar pelos documentos que o bot **já calcula**, o custo de leitura de cada coleção, e estimar `ativos × limite` antes de rodar. A medição que motivava tudo saiu depois com **126 leituras**, contra as ~42 mil da tentativa que quebrou. |
 
 ## Documentação
 
@@ -120,7 +123,7 @@ src/
 ├── firebase/          # única camada de persistência (Firestore ou memória)
 └── utils/             # logger com redação de segredos, formatadores
 dashboard/public/      # painel web: SVG puro para os gráficos, sem framework
-tests/                 # 532 testes em node:test
+tests/                 # 656 testes em node:test
 .md/                   # as sementes dos prompts — versionadas como código
 ```
 
@@ -131,7 +134,7 @@ projeto Firebase. Passo a passo completo em **[INSTALACAO.md](INSTALACAO.md)**.
 
 ```bash
 npm install
-npm test              # 532 testes, sem precisar de credencial nenhuma
+npm test              # 656 testes, sem precisar de credencial nenhuma
 
 cp .env.example .env  # preencha as chaves (nunca versionado)
 npm start             # bot 24/7

@@ -50,7 +50,10 @@ Rodar:
 
 ```bash
 npm start        # bot 24/7 (orquestrador multi-ativo, tick de 1 min)
-npm test         # 149 testes (indicadores, validador, Motor, IA, posições, simulador, migração, núcleo, conectores TT/BN)
+npm test         # 612 testes (indicadores, validador, Motor, IA, posições, simulador, migração,
+                 # núcleo, conectores MB/TT/BN/TORO/STEAM, modo assistido, supervisor, modo vendas,
+                 # trava de lucro, reentrada após a saída do Motor, orçamento por modo)
+npm run test:rules   # regras do Firestore no emulador (exige Java)
 ```
 
 Primeira execução: a migração V1→V2 roda sozinha (única e idempotente) — cria a
@@ -190,10 +193,11 @@ src/
 ├── regras/regrasEngine.js# última palavra antes de qualquer execução (agnóstico de ativo)
 ├── posicoes/posicoes.js  # lotes independentes por (plataforma, ativo)
 ├── executor/             # executor (sim/real por ativo), simulador (carteira por plataforma)
-├── conectores/           # contrato + mb/ (conectorMB, mbPublico, mbPrivado)
+├── conectores/           # contrato + mb/, tt/, bn/, toro/, steam/ (um por corretora)
 ├── migracao/             # migrarV1paraV2 (única, idempotente)
 ├── firebase/             # firebaseClient (árvore plataformas/, Firestore ou memória)
 └── utils/                # logger (com redação de segredos), formatador
-dashboard/public/         # painel web V2 (menu lateral, tela por ativo)
-tests/                    # npm test (115 testes)
+dashboard/public/         # painel web (menu lateral, tela por ativo, ⚙ Parâmetros)
+                          # + limiteLogin.js e orcamentos.js: módulos PUROS, testáveis fora do navegador
+tests/                    # npm test (612 testes)
 ```

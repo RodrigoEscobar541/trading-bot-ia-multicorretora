@@ -119,7 +119,7 @@ test('venda normal com lucro leva o sinal de + e marca a simulação', () => {
 
 test('recomendação da assistida diz o que fazer', () => {
   const texto = formatarOperacao({
-    plataformaId: 'TORO', ativoId: 'MXRF11', moeda: 'BRL',
+    plataformaId: 'TORO', ativoId: 'FIIR11', moeda: 'BRL',
     operacao: { tipo: 'COMPRA', status: 'sugerida', quantidade: 100, preco: 9.6, valor: 960, justificativa_ia: 'RSI baixo.' },
   });
   assert.match(texto, /Recomendação/);
@@ -136,7 +136,7 @@ test('rejeições e status irrelevantes não viram mensagem', () => {
   assert.equal(formatarOperacao({ plataformaId: 'MB', ativoId: 'BTC', operacao: null }), null);
   // DIVIDENDO é informativo e não é uma operação de trading.
   assert.equal(
-    formatarOperacao({ plataformaId: 'TORO', ativoId: 'MXRF11', operacao: { tipo: 'DIVIDENDO', status: 'executada' } }),
+    formatarOperacao({ plataformaId: 'TORO', ativoId: 'FIIR11', operacao: { tipo: 'DIVIDENDO', status: 'executada' } }),
     null,
   );
 });

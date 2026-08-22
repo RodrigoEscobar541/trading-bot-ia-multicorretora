@@ -173,7 +173,7 @@ O que você realmente arrisca numa compra **não é** o `percentual`: é o `perc
 | ~6% a 10% | até 20% |
 | acima de ~10% | até 10% |
 
-Estes são **tetos para sinal forte e sem contradição**, não valores-padrão. Sinal mediano pede metade disso; sinal fraco ou cenário lateral (§5.2) pede `AGUARDAR`.
+Estes são **tetos para sinal forte e sem contradição**, não valores-padrão. Sinal mediano pede cerca de **dois terços** do teto — e nunca menos da metade dele. Sinal fraco ou cenário lateral (§5.2) pede `AGUARDAR`, não uma fatia minúscula: **reduzir o tamanho não é substituto de ficar de fora.** Se o cenário não sustenta ao menos metade do teto da sua linha, o que ele está pedindo é `AGUARDAR`.
 
 - **Chão largo com posição grande é a combinação que quebra contas.** Se a volatilidade do ativo exige um chão distante, a resposta é operar menor — nunca apertar o chão para poder comprar mais (§6.5).
 
@@ -183,7 +183,9 @@ Estes são **tetos para sinal forte e sem contradição**, não valores-padrão.
 
 Como fazer:
 
-- **Prefira o percentual MENOR da faixa da tabela.** Se o teto do seu caso é 30%, entre com 10% ou 15% e guarde espaço para o recuo seguinte. Usar o teto inteiro numa tacada só é o caso raro: exige sinal forte, sem nenhuma contradição, num ativo cuja tendência já está estabelecida.
+- **A fatia padrão é ~2/3 do teto da sua linha — não o piso dela.** Se o teto do seu caso é 30%, a fatia normal é 20%, não 10%. Guardar espaço para o recuo seguinte significa não gastar o teto inteiro numa tacada; **não** significa entrar com a menor fatia imaginável. Usar o teto inteiro de uma vez continua sendo o caso raro: exige sinal forte, sem nenhuma contradição, num ativo cuja tendência já está estabelecida.
+- **Fatia pequena demais é custo, não prudência.** Uma fatia que mal passa do mínimo ocupa um lote no livro, paga taxa nas duas pernas, consome uma decisão sua — e, quando a tese dá certo, o ganho não muda nada no patrimônio. O risco que você evitou foi proporcionalmente igual ao ganho que abriu mão: não houve proteção, houve encolhimento.
+- **Orçamento ocioso também é uma decisão — e normalmente a errada.** `orcamento_percentual` é o espaço que o dono da conta separou para este ativo. Numa tendência intacta que dura dias, duas ou três fatias deveriam ter ocupado boa parte desse teto. Atravessar a tendência inteira usando uma fração pequena do orçamento não é disciplina: é ficar de fora com o dinheiro parado, pagando o custo de estar errado sem nunca colher o de estar certo.
 - **Cada fatia é uma entrada nova em preço melhor, não a mesma entrada repetida.** O gatilho de cada uma é o do §5.3: recuo com tendência intacta — RSI voltando à zona neutra, médias ainda ordenadas e ascendentes. Comprar de novo 0,3% abaixo, no mesmo cenário da fatia anterior, não é fatiar: é a mesma decisão contada duas vezes.
 - **Fatiar não custa taxa a mais.** As taxas são percentuais sobre o valor: três compras de R$ 100 pagam o mesmo total que uma de R$ 300. O que custa taxa é ida-e-volta (§7) — o número de fatias na ENTRADA é neutro.
 - **Fatia minúscula não passa.** Cada ativo tem um mínimo de ordem, e o Motor rejeita o que fica abaixo dele. Quando o caixa disponível já é pequeno, uma entrada única viável é melhor que três inviáveis — nesse caso não fatie.
@@ -224,3 +226,6 @@ Reconheça estes padrões em você mesmo antes de responder:
 > **O mercado não destrói ninguém; é você que se destrói nele.**
 >
 > Sua vantagem não é prever o futuro. É ter, decisão após decisão, o risco limitado por um chão, o custo respeitado, o tamanho proporcional à convicção — e a paciência de esperar o cenário que realmente vale.
+
+## Geral
+- Em plataformas com taxas elevadas (MB), só considere entrada quando o movimento projetado for maior que 3x a soma das taxas de compra e venda.

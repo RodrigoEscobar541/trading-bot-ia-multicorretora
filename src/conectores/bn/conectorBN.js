@@ -44,6 +44,12 @@ export function criarConectorBN({ plataforma, api }) {
       return privado.criarOrdemMercado(credenciais, { simbolo: par, lado, valor, quantidade });
     },
 
+    // Método OPCIONAL do contrato (§10.11): prova que a chave OPERA, não só lê.
+    // `/order/test` valida e descarta — nenhuma ordem chega ao livro.
+    async podeExecutar({ par } = {}) {
+      return privado.testarOrdem(credenciais, { simbolo: par });
+    },
+
     async aguardarFill(orderId, par) {
       return privado.aguardarFill(credenciais, orderId, { simbolo: par });
     },

@@ -85,17 +85,48 @@ test('arma quando o pico passa do gatilho, a devolução abaixo do pico', () => 
   assert.equal(aplicar[0].trava_lucro_anterior, null);
 });
 
-test('A TRAVA NUNCA FICA ABAIXO DO BREAKEVEN — é o que a impede de dar prejuízo', () => {
+test('A TRAVA NUNCA FICA ABAIXO DO BREAKEVEN — e, se cair NELE, não arma (V8.19)', () => {
   // Devolução absurda (20%): 103 × 0,8 = 82,4, bem abaixo da compra. O piso do
   // breakeven é que segura. Sem ele a trava viraria um segundo stop-loss, e um
   // stop-loss estreito é exatamente o defeito que a V8.8 corrigiu.
+  //
+  // O contrato ficou MAIS FORTE na V8.19, não mais fraco: antes ela armava
+  // EXATAMENTE no breakeven, e uma trava ali **nunca pode disparar** — a venda
+  // exige lucro líquido positivo, e abaixo do empate não existe lucro. Agora,
+  // quando o piso é quem venceria, ela simplesmente não arma. O lote fica sem
+  // trava, que é a verdade, e essa é a faixa em que a IA deve decidir (regras
+  // gerais §4.1) em vez de esperar por um automático que não vem.
   const config = { ...CONFIG, trava_lucro_devolucao_percentual: 20 };
   const p = lote({ preco_maximo: 103 });
   const { aplicar } = avaliarTravaLucro({ posicoes_abertas: [p], preco_atual: 103, config });
+  assert.deepEqual(aplicar, [], 'trava que nasceria no empate não arma');
+});
+
+test('V8.19: com gatilho > devolução ela arma ACIMA do breakeven — e aí vale', () => {
+  // O contraponto: respeitada a invariante da calibração (gatilho 0,5 × amplitude
+  // > devolução 0,4 × amplitude), a trava nasce ACIMA do empate e pode disparar.
+  const config = { ...CONFIG, trava_lucro_gatilho_percentual: 1, trava_lucro_devolucao_percentual: 0.4 };
+  const p = lote({ preco_maximo: 103 });
+  const { aplicar } = avaliarTravaLucro({ posicoes_abertas: [p], preco_atual: 103, config });
   assert.equal(aplicar.length, 1);
-  const breakeven = breakevenPosicao(p, config);
-  assert.ok(aplicar[0].trava_lucro >= Math.round(breakeven * 100) / 100 - 0.01);
-  assert.ok(aplicar[0].trava_lucro > p.preco_compra, 'nunca abaixo do preço de compra');
+  const breakeven = Math.round(breakevenPosicao(p, config) * 100) / 100;
+  assert.ok(aplicar[0].trava_lucro > breakeven, 'estritamente ACIMA do empate, senão é trava morta');
+});
+
+test('V8.19: gatilho <= devolução não produz mais trava morta (o caso do BN/BTC)', () => {
+  // O caso real de 21/08: o lote subiu pouco, a trava armou EXATAMENTE no
+  // breakeven (404.310,42) e ficou lá — parecendo armada na tela e no prompt da
+  // IA, sem poder disparar nunca. Quatro ativos do parque estavam com
+  // gatilho <= devolução quando isto foi descoberto.
+  const config = { ...CONFIG, trava_lucro_gatilho_percentual: 1, trava_lucro_devolucao_percentual: 1.3 };
+  const breakeven = breakevenPosicao(lote({}), config);
+  // pico logo acima do gatilho: é a faixa em que a trava nascia morta
+  const p = lote({ preco_maximo: breakeven * 1.011 });
+  assert.deepEqual(
+    avaliarTravaLucro({ posicoes_abertas: [p], preco_atual: p.preco_maximo, config }).aplicar,
+    [],
+    'nesta faixa a trava não arma mais',
+  );
 });
 
 test('a trava SÓ SOBE: pico mais alto eleva, pico mais baixo não rebaixa', () => {
@@ -301,8 +332,11 @@ test('CICLO REAL: o lote sobe, devolve o pico e é VENDIDO NO LUCRO pela trava',
   assert.equal(posicao.trava_lucro, 105152); // 106.000 × (1 − 0,8%)
   assert.ok(posicao.trava_lucro_em, 'a trava carimba quando foi armada');
 
-  // Devolve o pico: a trava é furada e o Motor realiza — sem chamar a IA.
-  let chamouIA = false;
+  // Devolve o pico: a trava é furada e o Motor realiza. A IA É chamada logo
+  // depois (V8.16), mas NUNCA para decidir a venda — quando ela chega, o lote
+  // já está fechado e o cenário diz isso. É a diferença entre "a IA vendeu" e
+  // "a IA foi perguntada se vale voltar".
+  let cenarioIA = null;
   const r2 = await import('../src/nucleo/cicloAtivo.js').then(({ executarCicloAtivo }) =>
     executarCicloAtivo({
       plataforma: ctx.plataforma,
@@ -311,18 +345,24 @@ test('CICLO REAL: o lote sobe, devolve o pico e é VENDIDO NO LUCRO pela trava',
       ativosDaPlataforma: [ctx.ativo],
       conector: conectorFalso({ preco: 105000, saldoMoeda: 800 }),
       estado: r1.estado,
-      decidirFn: async () => {
-        chamouIA = true;
+      decidirFn: async (cenario) => {
+        cenarioIA = cenario;
         return { acao: 'AGUARDAR', percentual: 0, justificativa: 'T.', valida: true };
       },
     }),
   );
 
-  assert.equal(chamouIA, false, 'a trava é do Motor: a IA não é consultada');
-  assert.equal(r2.tipo, 'trava_lucro');
-  assert.equal(r2.operacao.status, 'executada');
-  assert.equal(r2.operacao.origem_decisao, 'motor_trava_lucro');
-  assert.ok(r2.operacao.lucro_liquido > 0, 'a trava só realiza lucro');
+  assert.equal(r2.saida_automatica.motivo, 'TRAVA_DE_LUCRO', 'quem vendeu foi o Motor');
+  assert.equal(r2.saida_automatica.operacao.status, 'executada');
+  assert.equal(r2.saida_automatica.operacao.origem_decisao, 'motor_trava_lucro');
+  assert.ok(r2.saida_automatica.operacao.lucro_liquido > 0, 'a trava só realiza lucro');
+  assert.equal(r2.tipo, 'analise', 'o ciclo segue para decidir a reentrada');
+  assert.equal(cenarioIA.saida_automatica_recente.motivo, 'TRAVA_DE_LUCRO');
+  assert.equal(
+    cenarioIA.carteira.posicoes_abertas.length,
+    0,
+    'quando a IA é chamada o lote JÁ foi vendido — ela não tem o que vender',
+  );
 
   [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
   assert.equal(posicao.status, 'FECHADA');
@@ -340,7 +380,7 @@ test('CICLO REAL: a trava NÃO vende quando o preço já voltou ao vermelho', as
   assert.ok(armada.trava_lucro > 0, 'a trava precisa estar armada para o teste valer');
 
   const r2 = await rodar({ ...ctx, estado: r1.estado, preco: 101000 });
-  assert.notEqual(r2.tipo, 'trava_lucro');
+  assert.equal(r2.saida_automatica, null, 'nenhuma saída automática pode ter acontecido');
 
   const [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
   assert.notEqual(posicao.status, 'FECHADA');
@@ -358,8 +398,8 @@ test('CICLO REAL: o stop-loss tem precedência sobre a trava', async () => {
   const r1 = await rodar({ ...ctx, preco: 106000 });
 
   const r2 = await rodar({ ...ctx, estado: r1.estado, preco: 90000 });
-  assert.equal(r2.tipo, 'stop_loss');
-  assert.equal(r2.operacao.origem_decisao, 'motor_stop_loss');
+  assert.equal(r2.saida_automatica.motivo, 'STOP_LOSS');
+  assert.equal(r2.saida_automatica.operacao.origem_decisao, 'motor_stop_loss');
 
   const [posicao] = await obterPosicoesAtivoPorModo('MB', 'BTC', 'simulacao');
   assert.equal(posicao.fechada_por, 'stop_loss');
@@ -385,6 +425,6 @@ test('REGRESSÃO V8.11: com a folga de 5% o chão nem chegava à compra; a trava
   assert.ok(aberta.trava_lucro > breakevenPosicao(aberta, { taxa_compra_percentual: 0.7, taxa_venda_percentual: 0.7 }));
 
   const r2 = await rodar({ ...ctx, estado: r1.estado, preco: 103100 }); // devolveu 0,86%
-  assert.equal(r2.tipo, 'trava_lucro');
-  assert.ok(r2.operacao.lucro_liquido > 0);
+  assert.equal(r2.saida_automatica.motivo, 'TRAVA_DE_LUCRO');
+  assert.ok(r2.saida_automatica.operacao.lucro_liquido > 0);
 });
